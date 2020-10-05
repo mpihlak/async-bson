@@ -175,6 +175,11 @@ impl Document {
         self.doc.len()
     }
 
+    /// Returns true if the document has no keys
+    pub fn is_empty(&self) -> bool {
+        self.doc.len() == 0
+    }
+
     /// Collect a new document from byte stream.
     /// Only the fields specified in the selector are collected the rest
     /// of it is simply discarded.
@@ -367,7 +372,7 @@ async fn parse_document<R: AsyncRead + Unpin + Send>(
         };
 
         for elem_name in wanted_elements.iter() {
-            doc.insert(elem_name.to_string(), elem_value.clone());
+            doc.insert((*elem_name).to_string(), elem_value.clone());
         }
     }
     Ok(())
@@ -415,6 +420,8 @@ async fn read_string_with_len<R: AsyncRead + Unpin>(rdr: R, str_len: usize) -> R
 
     Err(Error::new(ErrorKind::Other, "conversion error"))
 }
+
+#[cfg(test)]
 
 mod tests {
 
