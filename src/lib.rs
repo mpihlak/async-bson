@@ -386,6 +386,7 @@ async fn skip_read_len<T: AsyncRead + Unpin>(rdr: &mut T) -> Result<u64> {
 pub async fn read_cstring<R: AsyncRead + Unpin>(rdr: &mut R) -> Result<String> {
     let mut bytes = Vec::new();
 
+    // XXX: this seems terribly inefficient
     while let Ok(b) = rdr.read_u8().await {
         if b == 0x00 {
             break;
@@ -469,6 +470,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_multiple_docs() {
+        use super::*;
+        use bson::doc;
+        use std::io::Cursor;
+
+        let mut buf = Vec::new();
+
+        let doc = doc! {
+            "foo": 1,
+        };
+        doc.to_writer(&mut buf).unwrap();
+        let doc = doc! {
+            "bar": 2,
+        };
+        doc.to_writer(&mut buf).unwrap();
+
+        let selector = FieldSelector::build()
+            .with("foo", "/foo")
+            .with("bar", "/bar");
+
+        let mut cursor = Cursor::new(&buf[..]);
+        let doc = Document::from_reader(&mut cursor, &selector).await.unwrap();
+        assert_eq!(1, doc.get_i32("foo").unwrap());
+
+        let doc = Document::from_reader(&mut cursor, &selector).await.unwrap();
+        assert_eq!(2, doc.get_i32("bar").unwrap());
+    }
+    #[tokio::test]
     async fn test_nested_array() {
         use super::*;
         use bson::doc;
@@ -487,14 +516,15 @@ mod tests {
         doc.to_writer(&mut buf).unwrap();
 
         let selector = FieldSelector::build()
-            .with("array_len", "/f/array/[]")
-            .with("array_first_foo", "/f/array/0/foo")
-            .with("array_any_baz", "/f/array/*/baz");
+            .with("a", "/f/array/[]")
+            .with("b", "/f/array/0/foo")
+            .with("c", "/f/array/2/baz");
 
         let doc = Document::from_reader(&buf[..], &selector).await.unwrap();
 
-        assert_eq!(3, doc.get_i32("array_len").unwrap());
-        assert_eq!(42, doc.get_i32("array_first_foo").unwrap());
+        assert_eq!(3, doc.get_i32("a").unwrap());
+        assert_eq!(42, doc.get_i32("b").unwrap());
+        assert_eq!(44, doc.get_i32("c").unwrap());
     }
 
     #[tokio::test]
