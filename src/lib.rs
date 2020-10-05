@@ -1,11 +1,29 @@
-/// An asynchronous BSON parser that only looks at document fields that are explicitly
-/// selected. Useful if we only want to collect some metadata about BSON. Eg. what were the
-/// "collection" and "db" of the MongoDb client request.
-///
-/// It works by having the caller specify a `FieldSelector`, indicating which fields
-/// need to be collected. The parser then goes through the BSON, skipping unneeded
-/// fields and collecting what was asked of it.
-///
+//! An asynchronous BSON parser that only looks at document fields that are explicitly
+//! selected. Useful for extracting only a handful of fields from a large BSON document.
+//!
+//! It works by having the caller specify a `FieldSelector`, indicating which fields
+//! need to be collected. The parser then goes through the BSON, collecting what was
+//! asked and skipping unneeded fields.
+//!
+//! The emphasis on *asynchronous* -- this is a streaming parser that does not require the whole
+//! BSON to be loaded into memory.
+//!
+//! # Examples:
+//!
+//! Extract some fields and an array length from the document:
+//! ```ignore
+//! use bson_lite::{FieldSelector, Document};
+//!
+//! // doc = { "foo": 1, "nested": { "array": [1, 2, 3] } }
+//! let selector = FieldSelector::build()
+//!     .with("foo", "/foo")
+//!     .with("bar", "/nested/array/0")
+//!     .with("len", "/nested/array/[]");
+//!
+//! let doc = Document::from_reader(rdr, &selector).await.unwrap();
+//! let foo = doc.get_i32("foo").unwrap();
+//! ```
+//!
 
 use std::fmt;
 use std::io::{Error, ErrorKind};
@@ -14,6 +32,8 @@ use std::collections::{HashMap, HashSet};
 use async_recursion::async_recursion;
 use tokio::io::{self, AsyncRead, AsyncReadExt, Result};
 
+/// Specifies the fields that we want to extract from the BSON stream.
+///
 #[derive(Debug)]
 pub struct FieldSelector<'a> {
     // Match labels keyed by the fully qualified element name (/ as separator) or alternatively
@@ -58,7 +78,7 @@ impl<'a> FieldSelector<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub enum BsonValue {
+enum BsonValue {
     Float(f64),
     String(String),
     Int32(i32),
@@ -84,12 +104,13 @@ impl fmt::Display for BsonValue {
     }
 }
 
+/// The document extracted from the BSON stream by applying `FieldSelector`.
 #[derive(Debug)]
-pub struct BsonLiteDocument {
+pub struct Document {
     doc: HashMap<String, BsonValue>,
 }
 
-impl fmt::Display for BsonLiteDocument {
+impl fmt::Display for Document {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{{ ")?;
         for (i, (k, v)) in self.doc.iter().enumerate() {
@@ -100,13 +121,15 @@ impl fmt::Display for BsonLiteDocument {
     }
 }
 
-impl BsonLiteDocument {
+impl Document {
+    // Creates an empty Document.
     fn new() -> Self {
-        BsonLiteDocument {
+        Document {
             doc: HashMap::new(),
         }
     }
 
+    /// Return the str value for this key, if it exists.
     pub fn get_str(&self, key: &str) -> Option<&str> {
         match self.doc.get(key) {
             Some(BsonValue::String(result)) => Some(result),
@@ -114,7 +137,7 @@ impl BsonLiteDocument {
         }
     }
 
-    #[allow(dead_code)]
+    /// Returns the float value for this key, if it exists.
     pub fn get_float(&self, key: &str) -> Option<f64> {
         match self.doc.get(key) {
             Some(BsonValue::Float(result)) => Some(*result),
@@ -122,6 +145,7 @@ impl BsonLiteDocument {
         }
     }
 
+    /// Returns the i32 value for this key, if it exists.
     pub fn get_i32(&self, key: &str) -> Option<i32> {
         match self.doc.get(key) {
             Some(BsonValue::Int32(result)) => Some(*result),
@@ -129,6 +153,7 @@ impl BsonLiteDocument {
         }
     }
 
+    /// Returns the i64 value for this key, if it exists.
     pub fn get_i64(&self, key: &str) -> Option<i64> {
         match self.doc.get(key) {
             Some(BsonValue::Int64(result)) => Some(*result),
@@ -136,6 +161,7 @@ impl BsonLiteDocument {
         }
     }
 
+    /// Returns true if the document contains the key.
     pub fn contains_key(&self, key: &str) -> bool {
         self.doc.contains_key(key)
     }
@@ -144,10 +170,26 @@ impl BsonLiteDocument {
         self.doc.insert(key, value);
     }
 
-    #[allow(dead_code)]
-    fn len(&self) -> usize {
+    /// Returns the number of keys in the document.
+    pub fn len(&self) -> usize {
         self.doc.len()
     }
+
+    /// Collect a new document from byte stream.
+    /// Only the fields specified in the selector are collected the rest
+    /// of it is simply discarded.
+    pub async fn from_reader<'a, R: AsyncRead + Unpin + Send>(
+        mut rdr: R,
+        selector: &FieldSelector<'a>,
+    ) -> Result<Document> {
+        let document_size = rdr.read_i32_le().await?;
+
+        let mut doc = Document::new();
+        parse_document(&mut rdr.take(document_size as u64), &selector, "", 0, &mut doc).await?;
+
+        Ok(doc)
+    }
+
 }
 
 #[async_recursion]
@@ -156,7 +198,7 @@ async fn parse_document<R: AsyncRead + Unpin + Send>(
     selector: &FieldSelector<'_>,
     prefix: &str,
     position: u32,
-    mut doc: &mut BsonLiteDocument,
+    mut doc: &mut Document,
 ) -> Result<()> {
     let mut position = position;
 
@@ -331,19 +373,6 @@ async fn parse_document<R: AsyncRead + Unpin + Send>(
     Ok(())
 }
 
-/// Parse the BSON document, collecting selected fields into a HashMap
-pub async fn decode_document<'a, R: AsyncRead + Unpin + Send>(
-    mut rdr: R,
-    selector: &FieldSelector<'a>,
-) -> Result<BsonLiteDocument> {
-    let _document_size = rdr.read_i32_le().await?;
-
-    let mut doc = BsonLiteDocument::new();
-    parse_document(&mut rdr, &selector, "", 0, &mut doc).await?;
-
-    Ok(doc)
-}
-
 async fn skip_bytes<T: AsyncRead + Unpin>(rdr: &mut T, bytes_to_skip: usize) -> Result<u64> {
     io::copy(&mut rdr.take(bytes_to_skip as u64), &mut tokio::io::sink()).await
 }
@@ -353,6 +382,7 @@ async fn skip_read_len<T: AsyncRead + Unpin>(rdr: &mut T) -> Result<u64> {
     skip_bytes(rdr, str_len as usize).await
 }
 
+/// Read a null terminated string from async stream.
 pub async fn read_cstring<R: AsyncRead + Unpin>(rdr: &mut R) -> Result<String> {
     let mut bytes = Vec::new();
 
@@ -424,9 +454,8 @@ mod tests {
             .with("array_len", "/deeply/nested/array/[]")
             .with("array_first", "/deeply/nested/array/@1")
             .with("monkey", "/nested/monkey/name");
-        println!("matching fields: {:?}", selector);
-        let doc = decode_document(&buf[..], &selector).await.unwrap();
-        println!("decoded: {}", doc);
+
+        let doc = Document::from_reader(&buf[..], &selector).await.unwrap();
 
         assert_eq!("a_string", doc.get_str("first_elem_name").unwrap());
         assert_eq!("foo", doc.get_str("first_elem_value").unwrap());
@@ -462,10 +491,7 @@ mod tests {
             .with("array_first_foo", "/f/array/0/foo")
             .with("array_any_baz", "/f/array/*/baz");
 
-        println!("matching fields: {:?}", selector);
-
-        let doc = decode_document(&buf[..], &selector).await.unwrap();
-        println!("decoded: {}", &doc);
+        let doc = Document::from_reader(&buf[..], &selector).await.unwrap();
 
         assert_eq!(3, doc.get_i32("array_len").unwrap());
         assert_eq!(42, doc.get_i32("array_first_foo").unwrap());
