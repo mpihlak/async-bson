@@ -380,16 +380,12 @@ async fn read_string_with_len<R: AsyncRead+Unpin>(rdr: R, str_len: usize) -> Res
     Err(Error::new(ErrorKind::Other, "conversion error"))
 }
 
-#[cfg(test)]
-
 mod tests {
     use super::*;
-    use env_logger;
     use bson::{Array,Bson,oid};
 
-    #[test]
-    fn test_parse_bson() {
-        let _ = env_logger::builder().is_test(true).try_init();
+    #[tokio::test]
+    async fn test_parse_bson() {
 
         let mut doc = bson::Document::new();
 
@@ -425,7 +421,7 @@ mod tests {
             .with("c", "/deeply/nested/array/len/[]")
             .with("monkey", "/nested/monkey/name");
         println!("matching fields: {:?}", selector);
-        let doc = decode_document(&buf[..], &selector).unwrap();
+        let doc = decode_document(&buf[..], &selector).await.unwrap();
         println!("decoded: {}", doc);
 
         assert_eq!("kala", doc.get_str("first_elem_name").unwrap());
@@ -435,10 +431,8 @@ mod tests {
         assert_eq!(5, doc.len());
     }
 
-    #[test]
-    fn test_array() {
-        let _ = env_logger::builder().is_test(true).try_init();
-
+    #[tokio::test]
+    async fn test_array() {
         let mut doc = bson::Document::new();
 
         doc.insert("first".to_string(), Bson::String("foo".to_string()));
@@ -461,7 +455,7 @@ mod tests {
             .with("last", "/last");
         println!("matching fields: {:?}", selector);
 
-        let doc = decode_document(&buf[..], &selector).unwrap();
+        let doc = decode_document(&buf[..], &selector).await.unwrap();
         println!("decoded: {}", &doc);
 
         assert_eq!("foo", doc.get_str("first").unwrap());
@@ -470,10 +464,8 @@ mod tests {
         assert_eq!(2.7, doc.get_float("last").unwrap());
     }
 
-    #[test]
-    fn test_nested_array() {
-        let _ = env_logger::builder().is_test(true).try_init();
-
+    #[tokio::test]
+    async fn test_nested_array() {
         let mut doc = bson::Document::new();
 
         let mut arr = Array::new();
@@ -500,7 +492,7 @@ mod tests {
 
         println!("matching fields: {:?}", selector);
 
-        let doc = decode_document(&buf[..], &selector).unwrap();
+        let doc = decode_document(&buf[..], &selector).await.unwrap();
         println!("decoded: {}", &doc);
 
         assert_eq!(2, doc.get_i32("array_len").unwrap());
@@ -510,14 +502,14 @@ mod tests {
 
     use std::io::{Cursor};
 
-    #[test]
-    fn test_read_cstring() {
+    #[tokio::test]
+    async fn test_read_cstring() {
         let buf = b"kala\0";
-        let res = read_cstring(&mut Cursor::new(&buf[..])).unwrap();
+        let res = read_cstring(&mut Cursor::new(&buf[..])).await.unwrap();
         assert_eq!(res, "kala");
 
         let buf = b"\0";
-        let res = read_cstring(&mut Cursor::new(&buf[..])).unwrap();
+        let res = read_cstring(&mut Cursor::new(&buf[..])).await.unwrap();
         assert_eq!(res, "");
     }
 }
