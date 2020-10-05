@@ -9,4 +9,4 @@ edition = "2018"
 [dependencies]
 tokio = { version="0.2", features=["full"] }
 async-recursion = "0.3"
-bson = '0.6'
+bson = '1.1'
