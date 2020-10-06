@@ -1,10 +1,8 @@
 [package]
-name = "bson-lite"
+name = "async-bson"
 version = "0.1.0"
-authors = ["mpihlak <martin.pihlak@starship.co>"]
+authors = ["mpihlak <martin.pihlak@gmail.com>"]
 edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 tokio = { version="0.2", features=["io-util", "macros", "rt-core"] }

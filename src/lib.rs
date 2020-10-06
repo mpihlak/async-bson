@@ -11,7 +11,7 @@
 //! # Example:
 //!
 //! ```
-//! use bson_lite::{DocumentParser, Document};
+//! use async_bson::{DocumentParser, Document};
 //!
 //! #[tokio::main]
 //!
@@ -54,7 +54,7 @@ use tokio::io::{self, AsyncRead, AsyncReadExt, Result};
 ///
 /// # Example: 
 /// ```
-/// use bson_lite::{DocumentParser};
+/// use async_bson::{DocumentParser};
 ///
 /// let parser = DocumentParser::new()
 ///     .field("foo", "/foo")
