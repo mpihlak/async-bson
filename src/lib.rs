@@ -64,16 +64,11 @@ use tokio::io::{self, AsyncRead, AsyncReadExt, Result};
 ///
 #[derive(Debug)]
 pub struct DocumentParser<'a> {
-    // Match labels keyed by the fully qualified element name (/ as separator) or alternatively
-    // with the element position (@<position number> instead of name)
+    // Match patterns mapped to the element name.
     //
-    // XXX: For small number of matchers a simple Vec would be actually be faster.
-    // Considerable time is spent on looking up the matchers, so needs a closer look.
-    // One option that came to mind would be to match on Vec<&str> instead of Strings,
-    // where each element would be a component of the path. ie ["foo", "bar", "baz"]
-    // instead of "/foo/bar/baz". It'd probably be cheaper to construct this also in
-    // the parser, because there'd be less string allocations and formatting.
-    matchers: HashMap<&'a str, String>,
+    // With some benchmarking bsearching on a Vec turned out to be considerably faster than
+    // HashMap lookups. Since we're going to be looking up a lot, it better be fast.
+    matchers: Vec<(&'a str, String)>,
 
     // Map of subdocument prefixes that we are interested in. We're using this to skip
     // documents that don't contain anything interesting.
@@ -86,14 +81,17 @@ impl<'a> DocumentParser<'a> {
     /// Use the `field` method to build up the parser.
     pub fn new() -> Self {
         DocumentParser {
-            matchers: HashMap::new(),
+            matchers: Vec::new(),
             match_prefixes: HashSet::new(),
         }
     }
 
     /// Add a field specification to the parser. 
     pub fn field(mut self, label: &'a str, match_pattern: &'a str) -> Self {
-        self.matchers.insert(match_pattern, label.to_owned());
+        self.matchers.push((match_pattern, label.to_owned()));
+        // We expect that this won't be called so frequently that the sort
+        // here becomes a problem.
+        self.matchers.sort_by(|a, b| a.0.cmp(b.0));
 
         // Now make a note of all the prefixes leading up to the exact value. So that
         // encountering /foo/bar/baz we insert /foo/bar/baz, /foo/bar and /foo
@@ -122,8 +120,14 @@ impl<'a> DocumentParser<'a> {
         Ok(doc)
     }
 
-    fn want_field(&self, field: &str) -> Option<&String> {
-        self.matchers.get(field)
+    /// Returns the field name if we want this pattern. 
+    /// Expectes the matchers to be sorted.
+    fn want_field(&self, field_pattern: &str) -> Option<&String> {
+        if let Ok(pos) = self.matchers.binary_search_by(|x| x.0.cmp(field_pattern)) {
+            Some(&self.matchers[pos].1)
+        } else {
+            None
+        }
     }
 
     fn want_prefix(&self, prefix: &str) -> bool {
