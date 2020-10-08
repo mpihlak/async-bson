@@ -171,16 +171,9 @@ impl<'a> DocumentParser<'a> {
                 doc.insert(item_key.to_string(), BsonValue::Int32(position as i32));
             }
 
-            // List of wanted elements. tuple of (name prefix, name alias)
-            // XXX: This Vec is just 2 elements, we can just use variables
-            let mut wanted_elements = Vec::new();
-            for elem_prefix in [&prefix_name, &prefix_pos].iter() {
-                if let Some(elem_name) = self.want_field(elem_prefix) {
-                    wanted_elements.push(elem_name);
-                }
-            }
-
-            let want_this_value = !wanted_elements.is_empty();
+            let match_by_name = self.want_field(&prefix_name);
+            let match_by_pos  = self.want_field(&prefix_pos);
+            let want_this_value = match_by_pos .is_some() || match_by_name.is_some();
 
             let elem_value = match elem_type {
                 0x01 => {
@@ -305,10 +298,16 @@ impl<'a> DocumentParser<'a> {
                 }
             };
 
-            for elem_name in wanted_elements.iter() {
-                // XXX: Avoid cloning the elem_value here. For example, this can be established if
-                // we either match the element by name or by position, but not both.
-                doc.insert((*elem_name).to_string(), elem_value.clone());
+            // We either want this element because it's name matches some pattern
+            // or it is at a wanted position. To save on string copying we move
+            // the elem_value into the result. The downside is that we can only do
+            // one of these operations, so name match takes precedence.
+            if let Some(elem_name) = match_by_name {
+                doc.insert(elem_name.to_string(), elem_value);
+            } else {
+                if let Some(elem_name) = match_by_pos  {
+                    doc.insert(elem_name.to_string(), elem_value);
+                }
             }
         }
         Ok(())
@@ -478,7 +477,8 @@ mod tests {
         use bson::doc;
 
         let doc = doc! {
-            "a_string": "foo",
+            "first": "foo",
+            "a_string": "bar",
             "an_f64": 3.14,
             "an_i32": 123i32,
             "an_i64": 12345678910i64,
@@ -512,8 +512,9 @@ mod tests {
 
         let doc = parser.parse_document(&buf[..]).await.unwrap();
 
-        assert_eq!("a_string", doc.get_str("first_elem_name").unwrap());
+        assert_eq!("first", doc.get_str("first_elem_name").unwrap());
         assert_eq!("foo", doc.get_str("first_elem_value").unwrap());
+        assert_eq!("bar", doc.get_str("string").unwrap());
         assert_eq!(3.14, doc.get_float("f64").unwrap());
         assert_eq!(123, doc.get_i32("i32").unwrap());
         assert_eq!(12345678910i64, doc.get_i64("i64").unwrap());
