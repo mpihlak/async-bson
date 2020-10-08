@@ -66,6 +66,13 @@ use tokio::io::{self, AsyncRead, AsyncReadExt, Result};
 pub struct DocumentParser<'a> {
     // Match labels keyed by the fully qualified element name (/ as separator) or alternatively
     // with the element position (@<position number> instead of name)
+    //
+    // XXX: For small number of matchers a simple Vec would be actually be faster.
+    // Considerable time is spent on looking up the matchers, so needs a closer look.
+    // One option that came to mind would be to match on Vec<&str> instead of Strings,
+    // where each element would be a component of the path. ie ["foo", "bar", "baz"]
+    // instead of "/foo/bar/baz". It'd probably be cheaper to construct this also in
+    // the parser, because there'd be less string allocations and formatting.
     matchers: HashMap<&'a str, String>,
 
     // Map of subdocument prefixes that we are interested in. We're using this to skip
@@ -165,6 +172,7 @@ impl<'a> DocumentParser<'a> {
             }
 
             // List of wanted elements. tuple of (name prefix, name alias)
+            // XXX: This Vec is just 2 elements, we can just use variables
             let mut wanted_elements = Vec::new();
             for elem_prefix in [&prefix_name, &prefix_pos].iter() {
                 if let Some(elem_name) = self.want_field(elem_prefix) {
@@ -298,6 +306,8 @@ impl<'a> DocumentParser<'a> {
             };
 
             for elem_name in wanted_elements.iter() {
+                // XXX: Avoid cloning the elem_value here. For example, this can be established if
+                // we either match the element by name or by position, but not both.
                 doc.insert((*elem_name).to_string(), elem_value.clone());
             }
         }
