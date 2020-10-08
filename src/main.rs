@@ -36,9 +36,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = Vec::new();
     doc.to_writer(&mut buf).unwrap();
 
+    println!("Parsing a {} byte document {} times.", buf.len(), NUM_ITERATIONS);
     for _ in 1..NUM_ITERATIONS {
         let _ = parser.parse_document(&buf[..]).await.unwrap();
     }
+
+    println!("done.");
 
     Ok(())
 }
