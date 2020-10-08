@@ -155,6 +155,15 @@ impl<'a> DocumentParser<'a> {
 
             let elem_name = read_cstring(&mut rdr).await?;
 
+            // Here we are preparing multiple string patterns from the 
+            // same prefix by appending just somethign to it. This also
+            // means that we do multple "want_field" lookups.
+            //
+            // However if we rearrange the matchers structure so that it's
+            // keyed by just the prefix and would have name, pos as attributes.
+            // Then we could perform just a single lookup for the prefix
+            // and match the name and position against that. We could avoid
+            // all those formats and extra lookups!
             let prefix_name = format!("{}/{}", prefix, elem_name);
             let prefix_pos = format!("{}/@{}", prefix, position);
 
@@ -177,7 +186,7 @@ impl<'a> DocumentParser<'a> {
 
             let match_by_name = self.want_field(&prefix_name);
             let match_by_pos  = self.want_field(&prefix_pos);
-            let want_this_value = match_by_pos .is_some() || match_by_name.is_some();
+            let want_this_value = match_by_pos.is_some() || match_by_name.is_some();
 
             let elem_value = match elem_type {
                 0x01 => {
