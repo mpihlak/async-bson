@@ -1,9 +1,9 @@
-//! An asynchronous BSON parser that only looks at document fields that are explicitly
-//! selected. Useful for extracting a handful of fields from a larger document.
+//! An asynchronous BSON parser that only parses explicitly specified subset of fields.
+//! Useful for extracting a handful of fields from a larger document.
 //!
 //! It works by having the caller initialize a `DocumentParser`, specifying the fields
 //! to be extracted. Then calling `parse_document` with a stream it goes through the input,
-//! extracting the specified fields and ignoring the rest.
+//! extracting the specified elements and ignoring the rest.
 //!
 //! The emphasis on *asynchronous* -- this is a streaming parser that does not require the whole
 //! BSON to be loaded into memory.
@@ -19,7 +19,8 @@
 //!     // This is our BSON "stream"
 //!     let buf = b"\x16\x00\x00\x00\x02hello\x00\x06\x00\x00\x00world\x00\x00";
 //!
-//!     let parser = DocumentParser::new().field("foo", "/hello");
+//!     // Parse the value of /hello, storing the value under "foo"
+//!     let parser = DocumentParser::new().match_exact("/hello", "foo");
 //!     let doc = parser.parse_document(&buf[..]).await.unwrap();
 //!
 //!     assert_eq!("world", doc.get_str("foo").unwrap());
@@ -43,30 +44,44 @@ use tokio::io::{self, AsyncRead, AsyncReadExt, Result};
 ///
 /// In addition to element values, also their names and length (for arrays) can be extracted.
 ///
-/// # Example patterns:
-/// * `/foo` - extracts value of `foo` in the top level document.
-/// * `/foo/bar` - value of `bar` within `foo`.
-/// * `/foo/@3` - extracts the value of the third element in `foo`.
-/// * `/foo/#3` - name of the third element.
-/// * `/items/[]` - length of the `items` array.
-/// * `/items/@1` - value of the first element.
-///
-///
 /// # Example: 
 /// ```
 /// use async_bson::{DocumentParser};
 ///
 /// let parser = DocumentParser::new()
-///     .field("foo", "/foo")
-///     .field("bar", "/foo/bar")
-///     .field("items_len", "/items/[]");
-/// ```
+///     .match_exact("/foo", "foo")
+///     .match_value_at("/foo", 1, "first_of_foo")
+///     .match_name_at("/foo", 1, "first_element_name")
+///     .match_array_len("/foo/items", "items_len");
 ///
+/// ```
+
+#[derive(Debug)]
+struct Matcher {
+    match_exact:        Option<String>,
+    match_name_at_pos:  Option<(String, u32)>,
+    match_value_at_pos: Option<(String, u32)>,
+    match_array_len:    Option<String>,
+}
+
+impl Matcher {
+    pub fn new() -> Self {
+        Matcher {
+            match_exact: None,
+            match_name_at_pos: None,
+            match_value_at_pos: None,
+            match_array_len: None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct DocumentParser<'a> {
-    // Match labels keyed by the fully qualified element name (/ as separator) or alternatively
-    // with the element position (@<position number> instead of name)
-    matchers: HashMap<&'a str, String>,
+    // Match patterns mapped to the element name.
+    //
+    // With some benchmarking bsearching on a Vec turned out to be considerably faster than
+    // HashMap lookups. Since we're going to be looking up a lot, it better be fast.
+    prefix_matchers: Vec<(&'a str, Matcher)>,
 
     // Map of subdocument prefixes that we are interested in. We're using this to skip
     // documents that don't contain anything interesting.
@@ -76,27 +91,38 @@ pub struct DocumentParser<'a> {
 impl<'a> DocumentParser<'a> {
 
     /// Create a new parser. It doesn't have any fields specified, so it doesn't match anything yet.
-    /// Use the `field` method to build up the parser.
     pub fn new() -> Self {
         DocumentParser {
-            matchers: HashMap::new(),
+            prefix_matchers: Vec::new(),
             match_prefixes: HashSet::new(),
         }
     }
 
-    /// Add a field specification to the parser. 
-    pub fn field(mut self, label: &'a str, match_pattern: &'a str) -> Self {
-        self.matchers.insert(match_pattern, label.to_owned());
+    /// Matches the element by name and extracts its value.
+    pub fn match_exact(mut self, prefix: &'a str, label: &'a str) -> Self {
+        let mut matcher = self.matcher_entry(prefix);
+        matcher.match_exact = Some(label.to_string());
+        self
+    }
 
-        // Now make a note of all the prefixes leading up to the exact value. So that
-        // encountering /foo/bar/baz we insert /foo/bar/baz, /foo/bar and /foo
-        let mut prefix = match_pattern;
-        while let Some(pos) = prefix.rfind('/') {
-            prefix = &prefix[..pos];
-            if !prefix.is_empty() {
-                self.match_prefixes.insert(prefix);
-            }
-        }
+    // Matches nth element name after the prefix and extracts the name.
+    pub fn match_name_at(mut self, prefix: &'a str, pos: u32, label: &'a str) -> Self {
+        let mut matcher = self.matcher_entry(prefix);
+        matcher.match_name_at_pos = Some((label.to_string(), pos));
+        self
+    }
+
+    // Matches nth element value after the prefix and extracts the value.
+    pub fn match_value_at(mut self, prefix: &'a str, pos: u32, label: &'a str) -> Self {
+        let mut matcher = self.matcher_entry(prefix);
+        matcher.match_value_at_pos = Some((label.to_string(), pos));
+        self
+    }
+
+    // Matches the named array and extracts its length.
+    pub fn match_array_len(mut self, prefix: &'a str, label: &'a str) -> Self {
+        let mut matcher = self.matcher_entry(prefix);
+        matcher.match_array_len = Some(label.to_string());
         self
     }
 
@@ -115,8 +141,40 @@ impl<'a> DocumentParser<'a> {
         Ok(doc)
     }
 
-    fn want_field(&self, field: &str) -> Option<&String> {
-        self.matchers.get(field)
+    fn get_matcher(&self, prefix: &'a str) -> Option<&Matcher> {
+        if let Ok(pos) = self.prefix_matchers.binary_search_by(|x| x.0.cmp(prefix)) {
+            Some(&self.prefix_matchers[pos].1)
+        } else {
+            None
+        }
+    }
+
+    /// Find the matcher and return a mutable reference to it. Create it if it doesn't exist.
+    fn matcher_entry(&mut self, prefix: &'a str) -> &mut Matcher {
+        if let Some(pos) = self.prefix_matchers.iter().position(|x| x.0 == prefix) {
+            return &mut self.prefix_matchers[pos].1
+        }
+
+        self.prefix_matchers.push((&prefix, Matcher::new()));
+
+        // Sort the matchers so that we don't have to mutate self in parser
+        // Assuming that this won't get called too often.
+        self.prefix_matchers.sort_by(|a, b| a.0.cmp(b.0));
+
+        // Make a note of all the prefixes leading up to the exact value. So that
+        // encountering /foo/bar/baz we insert /foo/bar/baz, /foo/bar and /foo
+        let mut work_prefix = prefix;
+        while let Some(pos) = work_prefix.rfind('/') {
+            work_prefix = &work_prefix[..pos];
+            if !work_prefix.is_empty() {
+                self.match_prefixes.insert(work_prefix);
+            }
+        }
+
+        // Find again, because we lost the position after sort
+        // XXX: Could we take a reference instead of position?
+        let pos = self.prefix_matchers.iter().position(|x| x.0 == prefix).unwrap();
+        &mut self.prefix_matchers[pos].1
     }
 
     fn want_prefix(&self, prefix: &str) -> bool {
@@ -143,36 +201,38 @@ impl<'a> DocumentParser<'a> {
             }
 
             let elem_name = read_cstring(&mut rdr).await?;
-
             let prefix_name = format!("{}/{}", prefix, elem_name);
-            let prefix_pos = format!("{}/@{}", prefix, position);
 
-            // Check if we just want the element name
-            let want_field_name_by_pos = format!("{}/#{}", prefix, position);
-            if let Some(item_key) = self.want_field(&want_field_name_by_pos) {
-                doc.insert(
-                    item_key.to_string(),
-                    BsonValue::String(elem_name.to_string()),
-                );
-            }
+            let prefix_matcher = self.get_matcher(&prefix);
+            let prefix_name_matcher = self.get_matcher(&prefix_name);
 
-            // Check if we just want the count of keys (i.e array len)
-            // Take a simple approach and just set the array len to current position
-            // we end up updating it for every value, but the benefit is simplicity.
-            let want_array_len = format!("{}/[]", prefix);
-            if let Some(item_key) = self.want_field(&want_array_len) {
-                doc.insert(item_key.to_string(), BsonValue::Int32(position as i32));
-            }
+            let mut want_this_value = false;
 
-            // List of wanted elements. tuple of (name prefix, name alias)
-            let mut wanted_elements = Vec::new();
-            for elem_prefix in [&prefix_name, &prefix_pos].iter() {
-                if let Some(elem_name) = self.want_field(elem_prefix) {
-                    wanted_elements.push(elem_name);
+            // Match for array length and element name. This will not use the matcher
+            // for the current element but instead need to use the matcher for it's 
+            // parent.
+            if let Some(matcher) = prefix_matcher {
+                if let Some(ref label) = matcher.match_array_len {
+                    doc.insert(label.clone(), BsonValue::Int32(position as i32));
+                }
+
+                if let Some((ref label, pos)) = matcher.match_name_at_pos {
+                    if pos == position {
+                        doc.insert(label.clone(), BsonValue::String(elem_name.to_string()));
+                    }
+                }
+
+                if matcher.match_value_at_pos.is_some() {
+                    // Yes we want the value, by position
+                    want_this_value = true;
                 }
             }
 
-            let want_this_value = !wanted_elements.is_empty();
+            if let Some(matcher) = prefix_name_matcher {
+                // Yes, we want the value
+                want_this_value = want_this_value 
+                    || matcher.match_exact.is_some() || matcher.match_array_len.is_some();
+            }
 
             let elem_value = match elem_type {
                 0x01 => {
@@ -196,6 +256,7 @@ impl<'a> DocumentParser<'a> {
                     // We only go through the trouble of parsing this if the field selector
                     // wants the document value or some element within it.
                     let _doc_len = rdr.read_i32_le().await?;
+
                     if want_this_value || self.want_prefix(&prefix_name) {
                         self.parse_internal(rdr, &prefix_name, 0, &mut doc).await?;
                         BsonValue::Placeholder("<nested document>")
@@ -297,9 +358,20 @@ impl<'a> DocumentParser<'a> {
                 }
             };
 
-            for elem_name in wanted_elements.iter() {
-                doc.insert((*elem_name).to_string(), elem_value.clone());
+            if let Some(matcher) = prefix_matcher {
+                if let Some((ref label, pos)) = matcher.match_value_at_pos {
+                    if pos == position {
+                        doc.insert(label.clone(), elem_value.clone());
+                    }
+                }
             }
+
+            if let Some(matcher) = prefix_name_matcher {
+                if let Some(ref label) = matcher.match_exact {
+                    doc.insert(label.clone(), elem_value);
+                }
+            }
+
         }
         Ok(())
     }
@@ -468,7 +540,8 @@ mod tests {
         use bson::doc;
 
         let doc = doc! {
-            "a_string": "foo",
+            "first": "foo",
+            "a_string": "bar",
             "an_f64": 3.14,
             "an_i32": 123i32,
             "an_i64": 12345678910i64,
@@ -490,20 +563,21 @@ mod tests {
         doc.to_writer(&mut buf).unwrap();
 
         let parser = DocumentParser::new()
-            .field("first_elem_value", "/@1")
-            .field("first_elem_name", "/#1")
-            .field("string", "/a_string")
-            .field("f64", "/an_f64")
-            .field("i32", "/an_i32")
-            .field("i64", "/an_i64")
-            .field("array_len", "/deeply/nested/array/[]")
-            .field("array_first", "/deeply/nested/array/@1")
-            .field("monkey", "/nested/monkey/name");
+            .match_name_at("", 1, "first_elem_name")
+            .match_value_at("", 1, "first_elem_value")
+            .match_exact("/a_string", "string")
+            .match_exact("/an_f64", "f64")
+            .match_exact("/an_i32", "i32")
+            .match_exact("/an_i64", "i64")
+            .match_array_len("/deeply/nested/array", "array_len")
+            .match_value_at("/deeply/nested/array", 1, "array_first")
+            .match_exact("/nested/monkey/name", "monkey");
 
         let doc = parser.parse_document(&buf[..]).await.unwrap();
 
-        assert_eq!("a_string", doc.get_str("first_elem_name").unwrap());
+        assert_eq!("first", doc.get_str("first_elem_name").unwrap());
         assert_eq!("foo", doc.get_str("first_elem_value").unwrap());
+        assert_eq!("bar", doc.get_str("string").unwrap());
         assert_eq!(3.14, doc.get_float("f64").unwrap());
         assert_eq!(123, doc.get_i32("i32").unwrap());
         assert_eq!(12345678910i64, doc.get_i64("i64").unwrap());
@@ -531,8 +605,8 @@ mod tests {
         doc.to_writer(&mut buf).unwrap();
 
         let parser = DocumentParser::new()
-            .field("foo", "/foo")
-            .field("bar", "/bar");
+            .match_exact("/foo", "foo")
+            .match_exact("/bar", "bar");
 
         let mut cursor = Cursor::new(&buf[..]);
         let doc = parser.parse_document(&mut cursor).await.unwrap();
@@ -561,9 +635,9 @@ mod tests {
         doc.to_writer(&mut buf).unwrap();
 
         let parser = DocumentParser::new()
-            .field("a", "/f/array/[]")
-            .field("b", "/f/array/0/foo")
-            .field("c", "/f/array/2/baz");
+            .match_array_len("/f/array", "a")
+            .match_exact("/f/array/0/foo", "b")
+            .match_exact("/f/array/2/baz", "c");
 
         let doc = parser.parse_document(&buf[..]).await.unwrap();
 
@@ -571,6 +645,9 @@ mod tests {
         assert_eq!(42, doc.get_i32("b").unwrap());
         assert_eq!(44, doc.get_i32("c").unwrap());
     }
+
+    // TODO: Add test cases for skipping unwanted nested elements
+    // TODO: Add test cases that required elements are not skipped
 
     #[tokio::test]
     async fn test_read_cstring() {
