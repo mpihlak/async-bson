@@ -44,7 +44,7 @@ use tokio::io::{self, AsyncRead, AsyncReadExt, Result};
 ///
 /// In addition to element values, also their names and length (for arrays) can be extracted.
 ///
-/// # Example: 
+/// # Example:
 /// ```
 /// use async_bson::{DocumentParser};
 ///
@@ -151,6 +151,10 @@ impl<'a> DocumentParser<'a> {
 
     /// Find the matcher and return a mutable reference to it. Create it if it doesn't exist.
     fn matcher_entry(&mut self, prefix: &'a str) -> &mut Matcher {
+        // Strip the extra / here, so that we don't have to do it later
+        // during parsing.
+        let prefix = if prefix == "/" { "" } else { prefix };
+
         if let Some(pos) = self.prefix_matchers.iter().position(|x| x.0 == prefix) {
             return &mut self.prefix_matchers[pos].1
         }
@@ -209,7 +213,7 @@ impl<'a> DocumentParser<'a> {
             let mut want_this_value = false;
 
             // Match for array length and element name. This will not use the matcher
-            // for the current element but instead need to use the matcher for it's 
+            // for the current element but instead need to use the matcher for its
             // parent.
             if let Some(matcher) = prefix_matcher {
                 if let Some(ref label) = matcher.match_array_len {
@@ -230,7 +234,7 @@ impl<'a> DocumentParser<'a> {
 
             if let Some(matcher) = prefix_name_matcher {
                 // Yes, we want the value
-                want_this_value = want_this_value 
+                want_this_value = want_this_value
                     || matcher.match_exact.is_some() || matcher.match_array_len.is_some();
             }
 
@@ -563,8 +567,8 @@ mod tests {
         doc.to_writer(&mut buf).unwrap();
 
         let parser = DocumentParser::new()
-            .match_name_at("", 1, "first_elem_name")
-            .match_value_at("", 1, "first_elem_value")
+            .match_name_at("/", 1, "first_elem_name")
+            .match_value_at("/", 1, "first_elem_value")
             .match_exact("/a_string", "string")
             .match_exact("/an_f64", "f64")
             .match_exact("/an_i32", "i32")
