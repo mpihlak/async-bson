@@ -653,6 +653,43 @@ mod tests {
     // TODO: Add test cases for skipping unwanted nested elements
     // TODO: Add test cases that required elements are not skipped
 
+    // This is an expensive benchmark, ignore this by default
+    // Run with: time cargo test -- --ignored
+    #[tokio::test]
+    #[ignore]
+    async fn benchmark_parser() {
+        use super::*;
+        use bson::doc;
+
+        const NUM_ITERATIONS: i32 = 100_000;
+
+        let doc = doc! {
+            "f": doc! {
+                "array": [
+                    doc! { "foo": "x".repeat(1000) },
+                    doc! { "foo": "x".repeat(1000) },
+                    doc! { "foo": "x".repeat(1000) },
+                    doc! { "foo": "x".repeat(1000) },
+                    doc! { "foo": "x".repeat(1000) },
+                    doc! { "foo": "x".repeat(1000) },
+                ],
+            },
+        };
+
+        let parser = DocumentParser::new()
+            .match_exact("/f/array/[]", "a")
+            .match_exact("/f/array/0/foo", "b")
+            .match_exact("/f/array/2/foo", "c");
+
+        let mut buf = Vec::new();
+        doc.to_writer(&mut buf).unwrap();
+
+        println!("Parsing a {} byte document {} times.", buf.len(), NUM_ITERATIONS);
+        for _ in 1..NUM_ITERATIONS {
+            let _ = parser.parse_document(&buf[..]).await.unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn test_read_cstring() {
         use super::*;
