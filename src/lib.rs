@@ -75,12 +75,43 @@ impl Matcher {
     }
 }
 
+/// Parse a BSON document from an async reader.
+///
+/// The parser is initialized with a set of matching patterns that specify which elements to
+/// extract from the stream. During parsing it matches those patterns against the BSON stream and
+/// collects the matching elements.
+///
+/// The matching patterns consists of a prefix, an optional position and a label. The prefix
+/// identifies the location of the element in the BSON with the forward slash character `/` 
+/// denoting hierarchy.
+///
+/// ```ignore
+/// {
+///     "name": "Data",
+///     "pets": [
+///         { "name": "Spot", "type": "cat" }
+///     ],
+/// }
+/// ```
+///
+/// * The prefix `/name` would match the `name` element in the document root and yield a value of
+/// "Data".
+/// * `/pets/0/name` would match the first element in the `pets` array and yield a value of
+/// `Spot`.
+/// * We could use the prefix `/pets/0` and position `2` to signify that we want the
+/// `type` field of the first element of the `pets` array.
+/// * We can also extract the length of the array by prefix `/pets`.
+///
+/// The collected values are stored in a flat key/value structure using the label given to the
+/// matching patterns. If multiple patterns have the same label, the last parsed value will be kept.
+///
+/// Only primitive types can be collect (strings and numbers).
+///
 #[derive(Debug)]
 pub struct DocumentParser<'a> {
-    // Match patterns mapped to the element name.
-    //
-    // With some benchmarking bsearching on a Vec turned out to be considerably faster than
-    // HashMap lookups. Since we're going to be looking up a lot, it better be fast.
+    // Matching rules for the parser. These consist of a prefix and a set of "matchers"
+    // for that prefix. These are going to be looked up a lot, so we keep them sorted
+    // for binary search.
     prefix_matchers: Vec<(&'a str, Matcher)>,
 
     // Map of subdocument prefixes that we are interested in. We're using this to skip
@@ -91,6 +122,7 @@ pub struct DocumentParser<'a> {
 impl<'a> DocumentParser<'a> {
 
     /// Create a new parser. It doesn't have any fields specified, so it doesn't match anything yet.
+    /// Use the match* functions to build up the parser definition.
     pub fn new() -> Self {
         DocumentParser {
             prefix_matchers: Vec::new(),
@@ -99,27 +131,55 @@ impl<'a> DocumentParser<'a> {
     }
 
     /// Matches the element by name and extracts its value.
+    ///
+    /// Example: Match element `foo.name` and store it's value under "name"
+    /// ```
+    /// use async_bson::{DocumentParser};
+    ///
+    /// let parser = DocumentParser::new().match_exact("/foo/name", "name");
+    /// ```
     pub fn match_exact(mut self, prefix: &'a str, label: &'a str) -> Self {
         let mut matcher = self.matcher_entry(prefix);
         matcher.match_exact = Some(label.to_string());
         self
     }
 
-    // Matches nth element name after the prefix and extracts the name.
+    /// Matches nth element name after the prefix and extracts the name.
+    ///
+    /// Example: Match the first element in foo and store it's **name** under "x"
+    /// ```
+    /// use async_bson::{DocumentParser};
+    ///
+    /// let parser = DocumentParser::new().match_name_at("/foo", 1, "x");
+    /// ```
     pub fn match_name_at(mut self, prefix: &'a str, pos: u32, label: &'a str) -> Self {
         let mut matcher = self.matcher_entry(prefix);
         matcher.match_name_at_pos = Some((label.to_string(), pos));
         self
     }
 
-    // Matches nth element value after the prefix and extracts the value.
+    /// Matches nth element value after the prefix and extracts the value.
+    ///
+    /// Example: Match the first element in foo and store it's **value** under "x"
+    /// ```
+    /// use async_bson::{DocumentParser};
+    ///
+    /// let parser = DocumentParser::new().match_value_at("/foo", 1, "x");
+    /// ```
     pub fn match_value_at(mut self, prefix: &'a str, pos: u32, label: &'a str) -> Self {
         let mut matcher = self.matcher_entry(prefix);
         matcher.match_value_at_pos = Some((label.to_string(), pos));
         self
     }
 
-    // Matches the named array and extracts its length.
+    /// Matches the named array and extracts its length.
+    ///
+    /// Example: Match the array `foo.pets` and store it's *length* under "num_pets"
+    /// ```
+    /// use async_bson::{DocumentParser};
+    ///
+    /// let parser = DocumentParser::new().match_array_len("/foo/pets", "num_pets");
+    /// ```
     pub fn match_array_len(mut self, prefix: &'a str, label: &'a str) -> Self {
         let mut matcher = self.matcher_entry(prefix);
         matcher.match_array_len = Some(label.to_string());
@@ -127,8 +187,8 @@ impl<'a> DocumentParser<'a> {
     }
 
     /// Collect a new document from byte stream.
-    /// Only the fields specified in the selector are collected the rest
-    /// of it is simply discarded.
+    /// Only the elements specified with matching patterns are collected, the
+    /// rest is simply discarded.
     pub async fn parse_document<'b, R: AsyncRead + Unpin + Send>(
         &self,
         mut rdr: R,
@@ -176,7 +236,6 @@ impl<'a> DocumentParser<'a> {
         }
 
         // Find again, because we lost the position after sort
-        // XXX: Could we take a reference instead of position?
         let pos = self.prefix_matchers.iter().position(|x| x.0 == prefix).unwrap();
         &mut self.prefix_matchers[pos].1
     }
