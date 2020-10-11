@@ -196,7 +196,15 @@ impl<'a> DocumentParser<'a> {
         let document_size = rdr.read_i32_le().await?;
 
         let mut doc = Document::new();
-        self.parse_internal(&mut rdr.take(document_size as u64), "", 0, &mut doc).await?;
+        let starting_prefix = "";
+
+        self.parse_internal(
+            &mut rdr.take(document_size as u64),
+            starting_prefix,
+            0,
+            self.get_matcher(starting_prefix),
+            &mut doc,
+        ).await?;
 
         Ok(doc)
     }
@@ -250,6 +258,7 @@ impl<'a> DocumentParser<'a> {
         mut rdr: &mut R,
         prefix: &str,
         position: u32,
+        prefix_matcher: Option<&'async_recursion Matcher>,
         mut doc: &mut Document,
     ) -> Result<()> {
         let mut position = position;
@@ -266,8 +275,11 @@ impl<'a> DocumentParser<'a> {
             let elem_name = read_cstring(&mut rdr).await?;
             let prefix_name = format!("{}/{}", prefix, elem_name);
 
-            let prefix_matcher = self.get_matcher(&prefix);
-            let prefix_name_matcher = self.get_matcher(&prefix_name);
+            // We have 2 matchers - one that matches elements by prefix and position
+            // and another that matches the exact element name. Note: that when we
+            // recurse the exact matcher becomes the prefix matcher, thus we just
+            // pass it along to avoid a lookup.
+            let exact_matcher = self.get_matcher(&prefix_name);
 
             let mut want_this_value = false;
 
@@ -291,7 +303,7 @@ impl<'a> DocumentParser<'a> {
                 }
             }
 
-            if let Some(matcher) = prefix_name_matcher {
+            if let Some(matcher) = exact_matcher {
                 // Yes, we want the value
                 want_this_value = want_this_value
                     || matcher.match_exact.is_some() || matcher.match_array_len.is_some();
@@ -321,7 +333,7 @@ impl<'a> DocumentParser<'a> {
                     let _doc_len = rdr.read_i32_le().await?;
 
                     if want_this_value || self.want_prefix(&prefix_name) {
-                        self.parse_internal(rdr, &prefix_name, 0, &mut doc).await?;
+                        self.parse_internal(rdr, &prefix_name, 0, exact_matcher, &mut doc).await?;
                         BsonValue::Placeholder("<nested document>")
                     } else {
                         skip_bytes(&mut rdr, _doc_len as usize - 4).await?;
@@ -429,7 +441,7 @@ impl<'a> DocumentParser<'a> {
                 }
             }
 
-            if let Some(matcher) = prefix_name_matcher {
+            if let Some(matcher) = exact_matcher {
                 if let Some(ref label) = matcher.match_exact {
                     doc.insert(label.clone(), elem_value);
                 }
