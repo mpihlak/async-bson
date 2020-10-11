@@ -82,7 +82,7 @@ impl Matcher {
 /// collects the matching elements.
 ///
 /// The matching patterns consists of a prefix, an optional position and a label. The prefix
-/// identifies the location of the element in the BSON with the forward slash character `/` 
+/// identifies the location of the element in the BSON with the forward slash character `/`
 /// denoting hierarchy.
 ///
 /// ```ignore
@@ -117,6 +117,9 @@ pub struct DocumentParser<'a> {
     // Map of subdocument prefixes that we are interested in. We're using this to skip
     // documents that don't contain anything interesting.
     match_prefixes: HashSet<&'a str>,
+
+    // Do we want a copy of the document bytes?
+    keep_bytes: bool,
 }
 
 impl<'a> DocumentParser<'a> {
@@ -127,6 +130,7 @@ impl<'a> DocumentParser<'a> {
         DocumentParser {
             prefix_matchers: Vec::new(),
             match_prefixes: HashSet::new(),
+            keep_bytes: false,
         }
     }
 
@@ -186,6 +190,14 @@ impl<'a> DocumentParser<'a> {
         self
     }
 
+    /// Set this to grab a copy of the document bytes or not.
+    /// The implication of setting this `true` is that we're going to read the
+    /// bytes into a buffer and then parse. Default is `false`.
+    pub fn keep_bytes(mut self, keep: bool) -> Self {
+        self.keep_bytes = keep;
+        self
+    }
+
     /// Collect a new document from byte stream.
     /// Only the elements specified with matching patterns are collected, the
     /// rest is simply discarded.
@@ -194,17 +206,23 @@ impl<'a> DocumentParser<'a> {
         mut rdr: R,
     ) -> Result<Document> {
         let document_size = rdr.read_i32_le().await?;
-
+        let mut rdr = rdr.take(document_size as u64);
         let mut doc = Document::new();
         let starting_prefix = "";
+        let starting_matcher = self.get_matcher(starting_prefix);
 
-        self.parse_internal(
-            &mut rdr.take(document_size as u64),
-            starting_prefix,
-            0,
-            self.get_matcher(starting_prefix),
-            &mut doc,
-        ).await?;
+        if self.keep_bytes {
+            let mut buf = Vec::new();
+
+            // Put the length back so that the caller has the whole BSON
+            buf.extend_from_slice(&document_size.to_le_bytes());
+
+            rdr.read_to_end(&mut buf).await?;
+            self.parse_internal(&mut &buf[4..], starting_prefix, 0, starting_matcher, &mut doc).await?;
+            doc.raw_bytes = Some(buf);
+        } else {
+            self.parse_internal(&mut rdr, starting_prefix, 0, starting_matcher, &mut doc).await?;
+        }
 
         Ok(doc)
     }
@@ -487,6 +505,7 @@ impl fmt::Display for BsonValue {
 #[derive(Debug)]
 pub struct Document {
     doc: HashMap<String, BsonValue>,
+    raw_bytes: Option<Vec<u8>>,
 }
 
 impl fmt::Display for Document {
@@ -505,6 +524,7 @@ impl Document {
     fn new() -> Self {
         Document {
             doc: HashMap::new(),
+            raw_bytes: None,
         }
     }
 
@@ -550,6 +570,15 @@ impl Document {
     /// Returns the number of keys in the document.
     pub fn len(&self) -> usize {
         self.doc.len()
+    }
+
+    /// Return the raw bytes of the Document.
+    pub fn get_raw_bytes(&self) -> Option<&Vec<u8>> {
+        if let Some(ref raw_bytes) = self.raw_bytes {
+            Some(raw_bytes)
+        } else {
+            None
+        }
     }
 
     /// Returns true if the document has no keys
@@ -608,11 +637,12 @@ async fn read_string_with_len<R: AsyncRead + Unpin>(rdr: R, str_len: usize) -> R
 #[cfg(test)]
 
 mod tests {
+    use super::*;
+    use bson::doc;
+    use std::io::Cursor;
 
     #[tokio::test]
     async fn test_parse_bson() {
-        use super::*;
-        use bson::doc;
 
         let doc = doc! {
             "first": "foo",
@@ -664,10 +694,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_docs() {
-        use super::*;
-        use bson::doc;
-        use std::io::Cursor;
-
         let mut buf = Vec::new();
 
         let doc = doc! {
@@ -693,9 +719,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_nested_array() {
-        use super::*;
-        use bson::doc;
-
         let doc = doc! {
             "f": doc! {
                 "array": [
@@ -721,6 +744,20 @@ mod tests {
         assert_eq!(44, doc.get_i32("c").unwrap());
     }
 
+    #[tokio::test]
+    async fn test_keep_bytes() {
+        let buf = b"\x16\x00\x00\x00\x02hello\x00\x06\x00\x00\x00world\x00\x00";
+
+        let parser = DocumentParser::new()
+            .match_exact("/hello", "foo")
+            .keep_bytes(true);
+
+        let doc = parser.parse_document(&buf[..]).await.unwrap();
+
+        assert_eq!(buf, doc.get_raw_bytes().unwrap().as_slice());
+    }
+
+
     // TODO: Add test cases for skipping unwanted nested elements
     // TODO: Add test cases that required elements are not skipped
 
@@ -729,9 +766,6 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn benchmark_parser() {
-        use super::*;
-        use bson::doc;
-
         const NUM_ITERATIONS: i32 = 100_000;
 
         let doc = doc! {
@@ -763,9 +797,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_cstring() {
-        use super::*;
-        use std::io::Cursor;
-
         let buf = b"kala\0";
         let res = read_cstring(&mut Cursor::new(&buf[..])).await.unwrap();
         assert_eq!(res, "kala");
