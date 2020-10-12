@@ -203,6 +203,15 @@ impl<'a> DocumentParser<'a> {
     /// rest is simply discarded.
     pub async fn parse_document<'b, R: AsyncRead + Unpin + Send>(
         &self,
+        rdr: R,
+    ) -> Result<Document> {
+        self.parse_document_opt(self.keep_bytes, rdr).await
+    }
+
+    /// Collect a new document from a byte stream, with additional options.
+    pub async fn parse_document_opt<'b, R: AsyncRead + Unpin + Send>(
+        &self,
+        keep_bytes: bool,
         mut rdr: R,
     ) -> Result<Document> {
         let document_size = rdr.read_i32_le().await?;
@@ -211,7 +220,7 @@ impl<'a> DocumentParser<'a> {
         let starting_prefix = "";
         let starting_matcher = self.get_matcher(starting_prefix);
 
-        if self.keep_bytes {
+        if keep_bytes || self.keep_bytes {
             let mut buf = Vec::new();
 
             // Put the length back so that the caller has the whole BSON
