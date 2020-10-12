@@ -215,7 +215,7 @@ impl<'a> DocumentParser<'a> {
         keep_bytes: bool,
     ) -> Result<Document> {
         let document_size = rdr.read_i32_le().await?;
-        let mut rdr = rdr.take(document_size as u64);
+        let mut rdr = rdr.take(document_size as u64 - 4);
         let mut doc = Document::new();
         let starting_prefix = "";
         let starting_matcher = self.get_matcher(starting_prefix);
