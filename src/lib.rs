@@ -205,14 +205,14 @@ impl<'a> DocumentParser<'a> {
         &self,
         rdr: R,
     ) -> Result<Document> {
-        self.parse_document_opt(self.keep_bytes, rdr).await
+        self.parse_document_opt(rdr, self.keep_bytes).await
     }
 
     /// Collect a new document from a byte stream, with additional options.
     pub async fn parse_document_opt<'b, R: AsyncRead + Unpin + Send>(
         &self,
-        keep_bytes: bool,
         mut rdr: R,
+        keep_bytes: bool,
     ) -> Result<Document> {
         let document_size = rdr.read_i32_le().await?;
         let mut rdr = rdr.take(document_size as u64);
