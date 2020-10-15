@@ -234,8 +234,11 @@ impl<'a> DocumentParser<'a> {
             self.parse_internal(&mut rdr, starting_prefix, 0, starting_matcher, &mut doc).await?;
         }
 
-        // We need to sink any remaining bytes. This really shouldn't happen, so
-        // warn about it.
+        // We need to sink any remaining bytes. This can only happen if the parser gets it wrong,
+        // but we need to be robust here and leave the stream at the correct position for the next
+        // caller. Do warn about it though.
+        //
+        // XXX: It actually happens, and we need to know why.
         let n = io::copy(&mut rdr, &mut tokio::io::sink()).await?;
         if n > 0 {
             warn!("parse_document_opt: sinked {} bytes.", n);
