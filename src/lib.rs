@@ -34,6 +34,7 @@ use std::collections::{HashMap, HashSet};
 
 use async_recursion::async_recursion;
 use tokio::io::{self, AsyncRead, AsyncReadExt, Result};
+use tracing::{warn};
 
 /// Async parser that extracts BSON fields into a Document.
 ///
@@ -233,6 +234,13 @@ impl<'a> DocumentParser<'a> {
             self.parse_internal(&mut rdr, starting_prefix, 0, starting_matcher, &mut doc).await?;
         }
 
+        // We need to sink any remaining bytes. This really shouldn't happen, so
+        // warn about it.
+        let n = io::copy(&mut rdr, &mut tokio::io::sink()).await?;
+        if n > 0 {
+            warn!("parse_document_opt: sinked {} bytes.", n);
+        }
+
         Ok(doc)
     }
 
@@ -357,13 +365,13 @@ impl<'a> DocumentParser<'a> {
                     // Embedded document or an array. Both are represented as a document.
                     // We only go through the trouble of parsing this if the field selector
                     // wants the document value or some element within it.
-                    let _doc_len = rdr.read_i32_le().await?;
+                    let doc_len = rdr.read_i32_le().await?;
 
                     if want_this_value || self.want_prefix(&prefix_name) {
                         self.parse_internal(rdr, &prefix_name, 0, exact_matcher, &mut doc).await?;
                         BsonValue::Placeholder("<nested document>")
                     } else {
-                        skip_bytes(&mut rdr, _doc_len as usize - 4).await?;
+                        skip_bytes(&mut rdr, doc_len as usize - 4).await?;
                         BsonValue::None
                     }
                 }
@@ -455,7 +463,7 @@ impl<'a> DocumentParser<'a> {
                 other => {
                     return Err(Error::new(
                         ErrorKind::Other,
-                        format!("unrecognized type: 0x{:02x}", other),
+                        format!("BSON: unrecognized type: 0x{:02x}", other),
                     ));
                 }
             };
@@ -473,7 +481,6 @@ impl<'a> DocumentParser<'a> {
                     doc.insert(label.clone(), elem_value);
                 }
             }
-
         }
         Ok(())
     }
@@ -626,7 +633,7 @@ pub async fn read_cstring<R: AsyncRead + Unpin>(rdr: &mut R) -> Result<String> {
         return Ok(res);
     }
 
-    Err(Error::new(ErrorKind::Other, "conversion error"))
+    Err(Error::new(ErrorKind::Other, "cstring conversion error"))
 }
 
 async fn read_string_with_len<R: AsyncRead + Unpin>(rdr: R, str_len: usize) -> Result<String> {
@@ -640,7 +647,7 @@ async fn read_string_with_len<R: AsyncRead + Unpin>(rdr: R, str_len: usize) -> R
         return Ok(res);
     }
 
-    Err(Error::new(ErrorKind::Other, "conversion error"))
+    Err(Error::new(ErrorKind::Other, "string conversion error"))
 }
 
 #[cfg(test)]
@@ -718,12 +725,17 @@ mod tests {
             .match_exact("/foo", "foo")
             .match_exact("/bar", "bar");
 
-        let mut cursor = Cursor::new(&buf[..]);
-        let doc = parser.parse_document(&mut cursor).await.unwrap();
-        assert_eq!(1, doc.get_i32("foo").unwrap());
+        for keep_bytes in vec![true, false] {
+            let mut cursor = Cursor::new(&buf[..]);
 
-        let doc = parser.parse_document(&mut cursor).await.unwrap();
-        assert_eq!(2, doc.get_i32("bar").unwrap());
+            let doc = parser.parse_document_opt(&mut cursor, keep_bytes).await.unwrap();
+            assert_eq!(1, doc.get_i32("foo").unwrap());
+
+            let doc = parser.parse_document_opt(&mut cursor, keep_bytes).await.unwrap();
+            assert_eq!(2, doc.get_i32("bar").unwrap());
+
+            assert_eq!(buf.len(), cursor.position() as usize);
+        }
     }
 
     #[tokio::test]

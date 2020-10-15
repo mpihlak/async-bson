@@ -1,12 +1,13 @@
 [package]
 name = "async-bson"
-version = "0.1.4"
+version = "0.1.5"
 authors = ["mpihlak <martin.pihlak@gmail.com>"]
 edition = "2018"
 
 [dependencies]
 tokio = { version="0.2", features=["io-util", "macros", "rt-core"] }
 async-recursion = "0.3"
+tracing = "0.1"
 
 [dev-dependencies]
 bson = '1.1'
