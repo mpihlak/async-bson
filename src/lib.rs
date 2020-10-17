@@ -246,6 +246,7 @@ impl<'a> DocumentParser<'a> {
 
             let remaining_bytes = document_size as u64 - cur.position();
             if remaining_bytes > 0 {
+                doc.is_partial = true;
                 warn!("partial parse: {} bytes remain.", remaining_bytes);
             }
 
@@ -261,6 +262,7 @@ impl<'a> DocumentParser<'a> {
         if self.sink_bytes {
             let n = io::copy(&mut rdr, &mut tokio::io::sink()).await?;
             if n > 0 {
+                doc.is_partial = true;
                 warn!("partial parse, sinked {} bytes.", n);
             }
         }
@@ -546,6 +548,7 @@ impl fmt::Display for BsonValue {
 pub struct Document {
     doc: HashMap<String, BsonValue>,
     raw_bytes: Option<Vec<u8>>,
+    is_partial: bool
 }
 
 impl fmt::Display for Document {
@@ -565,7 +568,12 @@ impl Document {
         Document {
             doc: HashMap::new(),
             raw_bytes: None,
+            is_partial: false,
         }
+    }
+
+    pub fn is_partial(&self) -> bool {
+        self.is_partial
     }
 
     /// Return the str value for this key.
