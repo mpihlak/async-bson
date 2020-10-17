@@ -30,6 +30,7 @@
 
 use std::fmt;
 use std::io::{Error, ErrorKind};
+use std::io::Cursor;
 use std::collections::{HashMap, HashSet};
 
 use async_recursion::async_recursion;
@@ -236,9 +237,18 @@ impl<'a> DocumentParser<'a> {
 
             // Put the length back so that the caller has the whole BSON
             buf.extend_from_slice(&document_size.to_le_bytes());
-
             rdr.read_to_end(&mut buf).await?;
-            self.parse_internal(&mut &buf[4..], starting_prefix, 0, starting_matcher, &mut doc).await?;
+
+            // Use a Cursor to detect partial parses
+            let mut cur = Cursor::new(&buf[..]);
+            cur.set_position(4);
+            self.parse_internal(&mut cur, starting_prefix, 0, starting_matcher, &mut doc).await?;
+
+            let remaining_bytes = document_size as u64 - cur.position();
+            if remaining_bytes > 0 {
+                warn!("partial parse: {} bytes remain.", remaining_bytes);
+            }
+
             doc.raw_bytes = Some(buf);
         } else {
             self.parse_internal(&mut rdr, starting_prefix, 0, starting_matcher, &mut doc).await?;
@@ -669,7 +679,6 @@ async fn read_string_with_len<R: AsyncRead + Unpin>(rdr: R, str_len: usize) -> R
 mod tests {
     use super::*;
     use bson::doc;
-    use std::io::Cursor;
 
     #[tokio::test]
     async fn test_parse_bson() {
