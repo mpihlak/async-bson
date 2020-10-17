@@ -260,10 +260,14 @@ impl<'a> DocumentParser<'a> {
         // caller. Do warn about it though.
         //
         if self.sink_bytes {
-            let n = io::copy(&mut rdr, &mut tokio::io::sink()).await?;
+            // XXX: read the bytes so that we can dump them
+            // let n = io::copy(&mut rdr, &mut tokio::io::sink()).await?;
+            let mut buf = Vec::new();
+            let n = rdr.read_to_end(&mut buf).await?;
             if n > 0 {
                 doc.is_partial = true;
                 warn!("partial parse, sinked {} bytes.", n);
+                warn!("bytes = {:#x?}", buf);
             }
         }
 
