@@ -121,6 +121,9 @@ pub struct DocumentParser<'a> {
 
     // Do we want a copy of the document bytes?
     keep_bytes: bool,
+
+    // Do we sink the leftover bytes from partial parse?
+    sink_bytes: bool,
 }
 
 impl<'a> DocumentParser<'a> {
@@ -132,6 +135,7 @@ impl<'a> DocumentParser<'a> {
             prefix_matchers: Vec::new(),
             match_prefixes: HashSet::new(),
             keep_bytes: false,
+            sink_bytes: true,
         }
     }
 
@@ -199,6 +203,12 @@ impl<'a> DocumentParser<'a> {
         self
     }
 
+    /// Don't sink the left over bytes. Mostly useful for debugging.
+    pub fn no_sink(mut self) -> Self {
+        self.sink_bytes = false;
+        self
+    }
+
     /// Collect a new document from byte stream.
     /// Only the elements specified with matching patterns are collected, the
     /// rest is simply discarded.
@@ -238,10 +248,11 @@ impl<'a> DocumentParser<'a> {
         // but we need to be robust here and leave the stream at the correct position for the next
         // caller. Do warn about it though.
         //
-        // XXX: It actually happens, and we need to know why.
-        let n = io::copy(&mut rdr, &mut tokio::io::sink()).await?;
-        if n > 0 {
-            warn!("parse_document_opt: sinked {} bytes.", n);
+        if self.sink_bytes {
+            let n = io::copy(&mut rdr, &mut tokio::io::sink()).await?;
+            if n > 0 {
+                warn!("partial parse, sinked {} bytes.", n);
+            }
         }
 
         Ok(doc)
@@ -780,7 +791,6 @@ mod tests {
 
         assert_eq!(buf, doc.get_raw_bytes().unwrap().as_slice());
     }
-
 
     // TODO: Add test cases for skipping unwanted nested elements
     // TODO: Add test cases that required elements are not skipped
