@@ -652,8 +652,12 @@ async fn skip_read_len<T: AsyncRead + Unpin>(rdr: &mut T) -> Result<u64> {
 pub async fn read_cstring<R: AsyncRead + Unpin>(rdr: &mut R) -> Result<String> {
     let mut bytes = Vec::new();
 
-    // XXX: this seems terribly inefficient
-    while let Ok(b) = rdr.read_u8().await {
+    // XXX: this seems terribly inefficient when dealing with unbuffered streams.
+    // Perhaps we could peek at a larger buffer and later discard the leftovers.
+
+    loop {
+        let b = rdr.read_u8().await?;
+
         if b == 0x00 {
             break;
         } else {
