@@ -217,11 +217,11 @@ impl<'a> DocumentParser<'a> {
         &self,
         rdr: R,
     ) -> Result<Document> {
-        self.parse_document_opt(rdr, self.keep_bytes).await
+        self.parse_document_keep_bytes(rdr, self.keep_bytes).await
     }
 
     /// Collect a new document from a byte stream, with additional options.
-    pub async fn parse_document_opt<'b, R: AsyncRead + Unpin + Send>(
+    pub async fn parse_document_keep_bytes<'b, R: AsyncRead + Unpin + Send>(
         &self,
         mut rdr: R,
         keep_bytes: bool,
@@ -247,7 +247,7 @@ impl<'a> DocumentParser<'a> {
             let remaining_bytes = document_size as u64 - cur.position();
             if remaining_bytes > 0 {
                 doc.is_partial = true;
-                warn!("partial parse: {} bytes remain.", remaining_bytes);
+                warn!("partial parse, {} bytes remain in buffer.", remaining_bytes);
             }
 
             doc.raw_bytes = Some(buf);
@@ -255,19 +255,14 @@ impl<'a> DocumentParser<'a> {
             self.parse_internal(&mut rdr, starting_prefix, 0, starting_matcher, &mut doc).await?;
         }
 
-        // We need to sink any remaining bytes. This can only happen if the parser gets it wrong,
-        // but we need to be robust here and leave the stream at the correct position for the next
-        // caller. Do warn about it though.
-        //
+        // Sink any remaining bytes to leave the stream at the correct position for
+        // the next caller. This should only happen if the parser messed up, so do
+        // warn about it.
         if self.sink_bytes {
-            // XXX: read the bytes so that we can dump them
-            // let n = io::copy(&mut rdr, &mut tokio::io::sink()).await?;
-            let mut buf = Vec::new();
-            let n = rdr.read_to_end(&mut buf).await?;
+            let n = io::copy(&mut rdr, &mut tokio::io::sink()).await?;
             if n > 0 {
                 doc.is_partial = true;
                 warn!("partial parse, sinked {} bytes.", n);
-                warn!("bytes = {:#x?}", buf);
             }
         }
 
@@ -767,10 +762,10 @@ mod tests {
         for keep_bytes in vec![true, false] {
             let mut cursor = Cursor::new(&buf[..]);
 
-            let doc = parser.parse_document_opt(&mut cursor, keep_bytes).await.unwrap();
+            let doc = parser.parse_document_keep_bytes(&mut cursor, keep_bytes).await.unwrap();
             assert_eq!(1, doc.get_i32("foo").unwrap());
 
-            let doc = parser.parse_document_opt(&mut cursor, keep_bytes).await.unwrap();
+            let doc = parser.parse_document_keep_bytes(&mut cursor, keep_bytes).await.unwrap();
             assert_eq!(2, doc.get_i32("bar").unwrap());
 
             assert_eq!(buf.len(), cursor.position() as usize);
