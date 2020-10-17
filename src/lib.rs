@@ -378,7 +378,7 @@ impl<'a> DocumentParser<'a> {
                 0x01 => {
                     // A float
                     let mut buf = [0 as u8; 8];
-                    rdr.read(&mut buf).await?;
+                    rdr.read_exact(&mut buf).await?;
                     BsonValue::Float(f64::from_le_bytes(buf))
                 }
                 0x02 => {
