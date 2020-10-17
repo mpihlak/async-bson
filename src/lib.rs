@@ -20,7 +20,7 @@
 //!     let buf = b"\x16\x00\x00\x00\x02hello\x00\x06\x00\x00\x00world\x00\x00";
 //!
 //!     // Parse the value of /hello, storing the value under "foo"
-//!     let parser = DocumentParser::new().match_exact("/hello", "foo");
+//!     let parser = DocumentParser::builder().match_exact("/hello", "foo");
 //!     let doc = parser.parse_document(&buf[..]).await.unwrap();
 //!
 //!     assert_eq!("world", doc.get_str("foo").unwrap());
@@ -50,7 +50,7 @@ use tracing::{warn};
 /// ```
 /// use async_bson::{DocumentParser};
 ///
-/// let parser = DocumentParser::new()
+/// let parser = DocumentParser::builder()
 ///     .match_exact("/foo", "foo")
 ///     .match_value_at("/foo", 1, "first_of_foo")
 ///     .match_name_at("/foo", 1, "first_element_name")
@@ -131,7 +131,7 @@ impl<'a> DocumentParser<'a> {
 
     /// Create a new parser. It doesn't have any fields specified, so it doesn't match anything yet.
     /// Use the match* functions to build up the parser definition.
-    pub fn new() -> Self {
+    pub fn builder() -> Self {
         DocumentParser {
             prefix_matchers: Vec::new(),
             match_prefixes: HashSet::new(),
@@ -146,7 +146,7 @@ impl<'a> DocumentParser<'a> {
     /// ```
     /// use async_bson::{DocumentParser};
     ///
-    /// let parser = DocumentParser::new().match_exact("/foo/name", "name");
+    /// let parser = DocumentParser::builder().match_exact("/foo/name", "name");
     /// ```
     pub fn match_exact(mut self, prefix: &'a str, label: &'a str) -> Self {
         let mut matcher = self.matcher_entry(prefix);
@@ -160,7 +160,7 @@ impl<'a> DocumentParser<'a> {
     /// ```
     /// use async_bson::{DocumentParser};
     ///
-    /// let parser = DocumentParser::new().match_name_at("/foo", 1, "x");
+    /// let parser = DocumentParser::builder().match_name_at("/foo", 1, "x");
     /// ```
     pub fn match_name_at(mut self, prefix: &'a str, pos: u32, label: &'a str) -> Self {
         let mut matcher = self.matcher_entry(prefix);
@@ -174,7 +174,7 @@ impl<'a> DocumentParser<'a> {
     /// ```
     /// use async_bson::{DocumentParser};
     ///
-    /// let parser = DocumentParser::new().match_value_at("/foo", 1, "x");
+    /// let parser = DocumentParser::builder().match_value_at("/foo", 1, "x");
     /// ```
     pub fn match_value_at(mut self, prefix: &'a str, pos: u32, label: &'a str) -> Self {
         let mut matcher = self.matcher_entry(prefix);
@@ -188,7 +188,7 @@ impl<'a> DocumentParser<'a> {
     /// ```
     /// use async_bson::{DocumentParser};
     ///
-    /// let parser = DocumentParser::new().match_array_len("/foo/pets", "num_pets");
+    /// let parser = DocumentParser::builder().match_array_len("/foo/pets", "num_pets");
     /// ```
     pub fn match_array_len(mut self, prefix: &'a str, label: &'a str) -> Self {
         let mut matcher = self.matcher_entry(prefix);
@@ -706,7 +706,7 @@ mod tests {
         let mut buf = Vec::new();
         doc.to_writer(&mut buf).unwrap();
 
-        let parser = DocumentParser::new()
+        let parser = DocumentParser::builder()
             .match_name_at("/", 1, "first_elem_name")
             .match_value_at("/", 1, "first_elem_value")
             .match_exact("/a_string", "string")
@@ -744,7 +744,7 @@ mod tests {
         };
         doc.to_writer(&mut buf).unwrap();
 
-        let parser = DocumentParser::new()
+        let parser = DocumentParser::builder()
             .match_exact("/foo", "foo")
             .match_exact("/bar", "bar");
 
@@ -776,7 +776,7 @@ mod tests {
         let mut buf = Vec::new();
         doc.to_writer(&mut buf).unwrap();
 
-        let parser = DocumentParser::new()
+        let parser = DocumentParser::builder()
             .match_array_len("/f/array", "a")
             .match_exact("/f/array/0/foo", "b")
             .match_exact("/f/array/2/baz", "c");
@@ -792,7 +792,7 @@ mod tests {
     async fn test_keep_bytes() {
         let buf = b"\x16\x00\x00\x00\x02hello\x00\x06\x00\x00\x00world\x00\x00";
 
-        let parser = DocumentParser::new()
+        let parser = DocumentParser::builder()
             .match_exact("/hello", "foo")
             .keep_bytes(true);
 
@@ -824,7 +824,7 @@ mod tests {
             },
         };
 
-        let parser = DocumentParser::new()
+        let parser = DocumentParser::builder()
             .match_exact("/f/array/[]", "a")
             .match_exact("/f/array/0/foo", "b")
             .match_exact("/f/array/2/foo", "c");
