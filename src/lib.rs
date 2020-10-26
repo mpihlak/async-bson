@@ -87,7 +87,7 @@ impl Matcher {
 /// identifies the location of the element in the BSON with the forward slash character `/`
 /// denoting hierarchy.
 ///
-/// ```ignore
+/// ```text
 /// {
 ///     "name": "Data",
 ///     "pets": [
