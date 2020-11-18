@@ -34,7 +34,7 @@ use std::io::Cursor;
 use std::collections::{HashMap, HashSet};
 
 use async_recursion::async_recursion;
-use tokio::io::{self, AsyncRead, AsyncReadExt, Result};
+use tokio::io::{self, AsyncReadExt, Result};
 use tracing::{warn};
 
 /// Async parser that extracts BSON fields into a Document.
@@ -57,6 +57,10 @@ use tracing::{warn};
 ///     .match_array_len("/foo/items", "items_len");
 ///
 /// ```
+
+
+pub trait DocumentReader: AsyncReadExt+Unpin+Send {}
+impl <T>DocumentReader for T where T: AsyncReadExt+Unpin+Send {}
 
 #[derive(Debug)]
 struct Matcher {
@@ -213,7 +217,7 @@ impl<'a> DocumentParser<'a> {
     /// Collect a new document from byte stream.
     /// Only the elements specified with matching patterns are collected, the
     /// rest is simply discarded.
-    pub async fn parse_document<'b, R: AsyncRead + Unpin + Send>(
+    pub async fn parse_document<'b, R: DocumentReader>(
         &self,
         rdr: R,
     ) -> Result<Document> {
@@ -221,7 +225,7 @@ impl<'a> DocumentParser<'a> {
     }
 
     /// Collect a new document from a byte stream, with additional options.
-    pub async fn parse_document_keep_bytes<'b, R: AsyncRead + Unpin + Send>(
+    pub async fn parse_document_keep_bytes<'b, R: DocumentReader>(
         &self,
         mut rdr: R,
         keep_bytes: bool,
@@ -313,7 +317,7 @@ impl<'a> DocumentParser<'a> {
     }
 
     #[async_recursion]
-    async fn parse_internal<R: AsyncRead + Unpin + Send>(
+    async fn parse_internal<R: DocumentReader>(
         &self,
         mut rdr: &mut R,
         prefix: &str,
@@ -638,17 +642,17 @@ impl Document {
     }
 }
 
-async fn skip_bytes<T: AsyncRead + Unpin>(rdr: &mut T, bytes_to_skip: usize) -> Result<u64> {
+async fn skip_bytes<T: DocumentReader>(rdr: &mut T, bytes_to_skip: usize) -> Result<u64> {
     io::copy(&mut rdr.take(bytes_to_skip as u64), &mut tokio::io::sink()).await
 }
 
-async fn skip_read_len<T: AsyncRead + Unpin>(rdr: &mut T) -> Result<u64> {
+async fn skip_read_len<T: DocumentReader>(rdr: &mut T) -> Result<u64> {
     let str_len = rdr.read_i32_le().await?;
     skip_bytes(rdr, str_len as usize).await
 }
 
 /// Read a null terminated string from async stream.
-pub async fn read_cstring<R: AsyncRead + Unpin>(rdr: &mut R) -> Result<String> {
+pub async fn read_cstring<R: DocumentReader>(rdr: &mut R) -> Result<String> {
     let mut bytes = Vec::new();
 
     // XXX: this seems terribly inefficient when dealing with unbuffered streams.
@@ -671,7 +675,7 @@ pub async fn read_cstring<R: AsyncRead + Unpin>(rdr: &mut R) -> Result<String> {
     Err(Error::new(ErrorKind::Other, "cstring conversion error"))
 }
 
-async fn read_string_with_len<R: AsyncRead + Unpin>(rdr: R, str_len: usize) -> Result<String> {
+async fn read_string_with_len<R: DocumentReader>(rdr: R, str_len: usize) -> Result<String> {
     let mut buf = Vec::with_capacity(str_len);
     rdr.take(str_len as u64).read_to_end(&mut buf).await?;
 
