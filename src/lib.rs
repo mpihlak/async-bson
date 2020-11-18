@@ -33,9 +33,36 @@ use std::io::{Error, ErrorKind};
 use std::io::{Cursor, Result};
 use std::collections::{HashMap, HashSet};
 
-use async_recursion::async_recursion;
-use tokio::io::{AsyncReadExt, AsyncBufReadExt};
 use tracing::{warn};
+
+#[cfg(not(feature="is_sync"))]
+use {
+    async_recursion::async_recursion,
+    tokio::io::{AsyncReadExt, AsyncBufReadExt}
+};
+
+#[cfg(not(feature="is_sync"))]
+pub trait DocumentReader: AsyncReadExt+AsyncBufReadExt+Unpin+Send {}
+#[cfg(not(feature="is_sync"))]
+impl <T>DocumentReader for T where T: AsyncReadExt+AsyncBufReadExt+Unpin+Send {}
+
+#[cfg(feature="is_sync")]
+use byteorder::{LittleEndian, ReadBytesExt};
+
+#[cfg(feature="is_sync")]
+pub trait DocumentReader: std::io::BufRead {
+    fn read_i32_le(&mut self) -> Result<i32> {
+        self.read_i32::<LittleEndian>()
+    }
+
+    fn read_i64_le(&mut self) -> Result<i64> {
+        self.read_i64::<LittleEndian>()
+    }
+}
+
+#[cfg(feature="is_sync")]
+impl <T>DocumentReader for T where T: std::io::BufRead {}
+
 
 /// Async parser that extracts BSON fields into a Document.
 ///
@@ -58,9 +85,6 @@ use tracing::{warn};
 ///
 /// ```
 
-
-pub trait DocumentReader: AsyncReadExt+AsyncBufReadExt+Unpin+Send {}
-impl <T>DocumentReader for T where T: AsyncReadExt+AsyncBufReadExt+Unpin+Send {}
 
 #[derive(Debug)]
 struct Matcher {
@@ -217,6 +241,7 @@ impl<'a> DocumentParser<'a> {
     /// Collect a new document from byte stream.
     /// Only the elements specified with matching patterns are collected, the
     /// rest is simply discarded.
+    #[maybe_async::maybe_async]
     pub async fn parse_document<'b, R: DocumentReader>(
         &self,
         rdr: R,
@@ -225,6 +250,7 @@ impl<'a> DocumentParser<'a> {
     }
 
     /// Collect a new document from a byte stream, with additional options.
+    #[maybe_async::maybe_async]
     pub async fn parse_document_keep_bytes<'b, R: DocumentReader>(
         &self,
         mut rdr: R,
@@ -307,8 +333,9 @@ impl<'a> DocumentParser<'a> {
         self.match_prefixes.contains(prefix)
     }
 
-    #[async_recursion]
-    async fn parse_internal<R: DocumentReader>(
+    #[maybe_async::maybe_async]
+    //#[async_recursion]
+    async fn parse_internal<'async_recursion, R: DocumentReader>(
         &self,
         mut rdr: &mut R,
         prefix: &str,
@@ -633,17 +660,23 @@ impl Document {
     }
 }
 
+#[maybe_async::maybe_async]
 async fn skip_bytes<T: DocumentReader>(rdr: &mut T, bytes_to_skip: usize) -> Result<usize> {
     let mut buf = vec![0u8; bytes_to_skip];
-    rdr.read_exact(&mut buf).await
+    let bytes_read = buf.len();
+
+    rdr.read_exact(&mut buf).await?;
+    Ok(bytes_read)
 }
 
+#[maybe_async::maybe_async]
 async fn skip_read_len<T: DocumentReader>(rdr: &mut T) -> Result<usize> {
     let str_len = rdr.read_i32_le().await?;
     skip_bytes(rdr, str_len as usize).await
 }
 
 /// Read a null terminated string from async stream.
+#[maybe_async::maybe_async]
 pub async fn read_cstring<R: DocumentReader>(rdr: &mut R) -> Result<String> {
     let mut bytes = Vec::new();
 
@@ -657,6 +690,7 @@ pub async fn read_cstring<R: DocumentReader>(rdr: &mut R) -> Result<String> {
     Err(Error::new(ErrorKind::Other, "cstring conversion error"))
 }
 
+#[maybe_async::maybe_async]
 async fn read_string_with_len<R: DocumentReader>(rdr: &mut R, str_len: usize) -> Result<String> {
     let mut buf = vec![0u8; str_len];
     rdr.read_exact(&mut buf).await?;
