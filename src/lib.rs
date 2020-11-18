@@ -30,11 +30,11 @@
 
 use std::fmt;
 use std::io::{Error, ErrorKind};
-use std::io::Cursor;
+use std::io::{Cursor, Result};
 use std::collections::{HashMap, HashSet};
 
 use async_recursion::async_recursion;
-use tokio::io::{self, AsyncReadExt, Result};
+use tokio::io::{self, AsyncReadExt};
 use tracing::{warn};
 
 /// Async parser that extracts BSON fields into a Document.
@@ -263,7 +263,7 @@ impl<'a> DocumentParser<'a> {
         // the next caller. This should only happen if the parser messed up, so do
         // warn about it.
         if self.sink_bytes {
-            let n = io::copy(&mut rdr, &mut tokio::io::sink()).await?;
+            let n = io::copy(&mut rdr, &mut io::sink()).await?;
             if n > 0 {
                 doc.is_partial = true;
                 warn!("partial parse, sinked {} bytes.", n);
@@ -643,7 +643,7 @@ impl Document {
 }
 
 async fn skip_bytes<T: DocumentReader>(rdr: &mut T, bytes_to_skip: usize) -> Result<u64> {
-    io::copy(&mut rdr.take(bytes_to_skip as u64), &mut tokio::io::sink()).await
+    io::copy(&mut rdr.take(bytes_to_skip as u64), &mut io::sink()).await
 }
 
 async fn skip_read_len<T: DocumentReader>(rdr: &mut T) -> Result<u64> {
