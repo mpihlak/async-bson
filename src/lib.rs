@@ -34,7 +34,7 @@ use std::io::{Cursor, Result};
 use std::collections::{HashMap, HashSet};
 
 use async_recursion::async_recursion;
-use tokio::io::{self, AsyncReadExt, AsyncBufReadExt};
+use tokio::io::{AsyncReadExt, AsyncBufReadExt};
 use tracing::{warn};
 
 /// Async parser that extracts BSON fields into a Document.
@@ -230,18 +230,20 @@ impl<'a> DocumentParser<'a> {
         mut rdr: R,
         keep_bytes: bool,
     ) -> Result<Document> {
-        let document_size = rdr.read_i32_le().await?;
-        let mut rdr = rdr.take(document_size as u64 - 4);
         let mut doc = Document::new();
         let starting_prefix = "";
         let starting_matcher = self.get_matcher(starting_prefix);
 
+        let document_size = rdr.read_i32_le().await?;
+
         if keep_bytes || self.keep_bytes {
-            let mut buf = Vec::new();
+            let length_bytes = document_size.to_le_bytes();
+            let mut buf = vec![0u8; document_size as usize];
 
             // Put the length back so that the caller has the whole BSON
-            buf.extend_from_slice(&document_size.to_le_bytes());
-            rdr.read_to_end(&mut buf).await?;
+            buf[..length_bytes.len()].copy_from_slice(&length_bytes);
+
+            rdr.read_exact(&mut buf[4..]).await?;
 
             // Use a Cursor to detect partial parses
             let mut cur = Cursor::new(&buf[..]);
@@ -257,17 +259,6 @@ impl<'a> DocumentParser<'a> {
             doc.raw_bytes = Some(buf);
         } else {
             self.parse_internal(&mut rdr, starting_prefix, 0, starting_matcher, &mut doc).await?;
-        }
-
-        // Sink any remaining bytes to leave the stream at the correct position for
-        // the next caller. This should only happen if the parser messed up, so do
-        // warn about it.
-        if self.sink_bytes {
-            let n = io::copy(&mut rdr, &mut io::sink()).await?;
-            if n > 0 {
-                doc.is_partial = true;
-                warn!("partial parse, sinked {} bytes.", n);
-            }
         }
 
         Ok(doc)
@@ -642,11 +633,12 @@ impl Document {
     }
 }
 
-async fn skip_bytes<T: DocumentReader>(rdr: &mut T, bytes_to_skip: usize) -> Result<u64> {
-    io::copy(&mut rdr.take(bytes_to_skip as u64), &mut io::sink()).await
+async fn skip_bytes<T: DocumentReader>(rdr: &mut T, bytes_to_skip: usize) -> Result<usize> {
+    let mut buf = vec![0u8; bytes_to_skip];
+    rdr.read_exact(&mut buf).await
 }
 
-async fn skip_read_len<T: DocumentReader>(rdr: &mut T) -> Result<u64> {
+async fn skip_read_len<T: DocumentReader>(rdr: &mut T) -> Result<usize> {
     let str_len = rdr.read_i32_le().await?;
     skip_bytes(rdr, str_len as usize).await
 }
@@ -665,9 +657,9 @@ pub async fn read_cstring<R: DocumentReader>(rdr: &mut R) -> Result<String> {
     Err(Error::new(ErrorKind::Other, "cstring conversion error"))
 }
 
-async fn read_string_with_len<R: DocumentReader>(rdr: R, str_len: usize) -> Result<String> {
-    let mut buf = Vec::with_capacity(str_len);
-    rdr.take(str_len as u64).read_to_end(&mut buf).await?;
+async fn read_string_with_len<R: DocumentReader>(rdr: &mut R, str_len: usize) -> Result<String> {
+    let mut buf = vec![0u8; str_len];
+    rdr.read_exact(&mut buf).await?;
 
     // Remove the trailing null, we won't need it
     let _ = buf.pop();
