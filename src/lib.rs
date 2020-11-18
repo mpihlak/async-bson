@@ -34,7 +34,7 @@ use std::io::{Cursor, Result};
 use std::collections::{HashMap, HashSet};
 
 use async_recursion::async_recursion;
-use tokio::io::{self, AsyncReadExt};
+use tokio::io::{self, AsyncReadExt, AsyncBufReadExt};
 use tracing::{warn};
 
 /// Async parser that extracts BSON fields into a Document.
@@ -59,8 +59,8 @@ use tracing::{warn};
 /// ```
 
 
-pub trait DocumentReader: AsyncReadExt+Unpin+Send {}
-impl <T>DocumentReader for T where T: AsyncReadExt+Unpin+Send {}
+pub trait DocumentReader: AsyncReadExt+AsyncBufReadExt+Unpin+Send {}
+impl <T>DocumentReader for T where T: AsyncReadExt+AsyncBufReadExt+Unpin+Send {}
 
 #[derive(Debug)]
 struct Matcher {
@@ -655,18 +655,8 @@ async fn skip_read_len<T: DocumentReader>(rdr: &mut T) -> Result<u64> {
 pub async fn read_cstring<R: DocumentReader>(rdr: &mut R) -> Result<String> {
     let mut bytes = Vec::new();
 
-    // XXX: this seems terribly inefficient when dealing with unbuffered streams.
-    // Perhaps we could peek at a larger buffer and later discard the leftovers.
-
-    loop {
-        let b = rdr.read_u8().await?;
-
-        if b == 0x00 {
-            break;
-        } else {
-            bytes.push(b);
-        }
-    }
+    rdr.read_until(0, &mut bytes).await?;
+    let _ = bytes.pop();    // Drop the trailing zero
 
     if let Ok(res) = String::from_utf8(bytes) {
         return Ok(res);
