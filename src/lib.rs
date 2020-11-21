@@ -2,11 +2,26 @@
 //! Useful for extracting a handful of fields from a larger document.
 //!
 //! It works by having the caller initialize a `DocumentParser`, specifying the fields
-//! to be extracted. Then calling `parse_document` with a stream it goes through the input,
-//! extracting the specified elements and ignoring the rest.
+//! to be extracted. Then calling `parse_document` with a stream the parser goes through the input,
+//! extracting the specified elements and ignoring the rest. The input can be an async stream
+//! or a buffer. In case of an async stream the parser simply yields the task when no more input
+//! is available. If a buffer is passed, it expects the whole message to be there.
 //!
-//! The emphasis on *asynchronous* -- this is a streaming parser that does not require the whole
-//! BSON to be loaded into memory.
+//! The emphasis on **asynchronous** -- this is a streaming parser that does not require the whole
+//! BSON to be loaded into memory. As such it uses less memory than a conventional parser, but
+//! does use extra CPU for pulling the bytes from a stream.
+//!
+//! The parser can be also used in synchronous mode by specifying `is_sync` feature. This is
+//! useful in when we want to have a really fast parser and don't care about the memory overhead
+//! of buffering the whole message. This is also useful in cases when don't want (or can't) use
+//! an async runtime (i.e. in a WASM sandbox).
+//!
+//! ```
+//! [dependencies]
+//! async-bson = { version = "0.2", features = ["is_sync"] }
+//! ```
+//!
+//! The default is to use the asynchronous parser.
 //!
 //! # Example:
 //!
