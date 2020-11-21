@@ -5,15 +5,13 @@ authors = ["mpihlak <martin.pihlak@gmail.com>"]
 edition = "2018"
 
 [features]
-default = []
-is_sync = ["maybe-async/is_sync"]
+default = [ "tokio/io-util", "tokio/macros", "tokio/rt-core" ]
+is_sync = [ "maybe-async/is_sync", "byteorder" ]
 
 [dependencies]
-tokio = { version="0.2", features=["io-util", "macros", "rt-core"] }
-tracing = "0.1"
-maybe-async = { version="0.2" }
-byteorder = "1.3"
-byteio = "0.2"
+maybe-async = { version = "0.2" }
+tokio = { version = "0.2", default-features = false, optional = true }
+byteorder = { version = "1.3", optional = true }
 
 [dev-dependencies]
 bson = '1.1'

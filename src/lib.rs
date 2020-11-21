@@ -48,8 +48,6 @@ use std::io::{Error, ErrorKind};
 use std::io::{Cursor, Result};
 use std::collections::{HashMap, HashSet};
 
-use tracing::{warn};
-
 #[cfg(not(feature="is_sync"))]
 use {
     tokio::io::{AsyncReadExt, AsyncBufReadExt},
@@ -304,7 +302,6 @@ impl<'a> DocumentParser<'a> {
             let remaining_bytes = document_size as u64 - cur.position();
             if remaining_bytes > 0 {
                 doc.is_partial = true;
-                warn!("partial parse, {} bytes remain in buffer.", remaining_bytes);
             }
 
             doc.raw_bytes = Some(buf);
