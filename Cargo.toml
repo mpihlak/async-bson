@@ -5,15 +5,14 @@ authors = ["mpihlak <martin.pihlak@gmail.com>"]
 edition = "2018"
 
 [features]
-default = ["is_sync"]
+default = [] #["is_sync"]
 is_sync = []
 
 [dependencies]
 tokio = { version="0.2", features=["io-util", "macros", "rt-core"] }
-async-recursion = "0.3"
 tracing = "0.1"
-#maybe-async = { version="0.2" }
-maybe-async = { version="0.2", features=["is_sync"] }
+maybe-async = { version="0.2" }
+#maybe-async = { version="0.2", features=["is_sync"] }
 byteorder = "1.3"
 byteio = "0.2"
 

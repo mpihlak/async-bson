@@ -37,9 +37,16 @@ use tracing::{warn};
 
 #[cfg(not(feature="is_sync"))]
 use {
-    async_recursion::async_recursion,
-    tokio::io::{AsyncReadExt, AsyncBufReadExt}
+    tokio::io::{AsyncReadExt, AsyncBufReadExt},
+    std::future::Future,
+    std::pin::Pin,
 };
+
+#[cfg(not(feature="is_sync"))]
+type ParserResult<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
+
+#[cfg(feature="is_sync")]
+type ParserResult = Result<()>;
 
 #[cfg(not(feature="is_sync"))]
 pub trait DocumentReader: AsyncReadExt+AsyncBufReadExt+Unpin+Send {}
@@ -334,204 +341,205 @@ impl<'a> DocumentParser<'a> {
     }
 
     #[maybe_async::maybe_async]
-    //#[async_recursion]
-    async fn parse_internal<'async_recursion, R: DocumentReader>(
-        &self,
-        mut rdr: &mut R,
-        prefix: &str,
+    fn parse_internal<'x, R: DocumentReader + 'x>(
+        &'x self,
+        mut rdr: &'x mut R,
+        prefix: &'x str,
         position: u32,
-        prefix_matcher: Option<&'async_recursion Matcher>,
-        mut doc: &mut Document,
-    ) -> Result<()> {
-        let mut position = position;
+        prefix_matcher: Option<&'x Matcher>,
+        mut doc: &'x mut Document,
+    ) -> ParserResult<'x>
+    {
+        Box::pin(async move {
+            let mut position = position;
 
-        loop {
-            position += 1;
+            loop {
+                position += 1;
 
-            let elem_type = rdr.read_u8().await?;
+                let elem_type = rdr.read_u8().await?;
 
-            if elem_type == 0x00 {
-                break;
-            }
-
-            let elem_name = read_cstring(&mut rdr).await?;
-            let prefix_name = format!("{}/{}", prefix, elem_name);
-
-            // We have 2 matchers - one that matches elements by prefix and position
-            // and another that matches the exact element name. Note: that when we
-            // recurse the exact matcher becomes the prefix matcher, thus we just
-            // pass it along to avoid a lookup.
-            let exact_matcher = self.get_matcher(&prefix_name);
-
-            let mut want_this_value = false;
-
-            // Match for array length and element name. This will not use the matcher
-            // for the current element but instead need to use the matcher for its
-            // parent.
-            if let Some(matcher) = prefix_matcher {
-                if let Some(ref label) = matcher.match_array_len {
-                    doc.insert(label.clone(), BsonValue::Int32(position as i32));
+                if elem_type == 0x00 {
+                    break;
                 }
 
-                if let Some((ref label, pos)) = matcher.match_name_at_pos {
-                    if pos == position {
-                        doc.insert(label.clone(), BsonValue::String(elem_name.to_string()));
+                let elem_name = read_cstring(&mut rdr).await?;
+                let prefix_name = format!("{}/{}", prefix, elem_name);
+
+                // We have 2 matchers - one that matches elements by prefix and position
+                // and another that matches the exact element name. Note: that when we
+                // recurse the exact matcher becomes the prefix matcher, thus we just
+                // pass it along to avoid a lookup.
+                let exact_matcher = self.get_matcher(&prefix_name);
+
+                let mut want_this_value = false;
+
+                // Match for array length and element name. This will not use the matcher
+                // for the current element but instead need to use the matcher for its
+                // parent.
+                if let Some(matcher) = prefix_matcher {
+                    if let Some(ref label) = matcher.match_array_len {
+                        doc.insert(label.clone(), BsonValue::Int32(position as i32));
+                    }
+
+                    if let Some((ref label, pos)) = matcher.match_name_at_pos {
+                        if pos == position {
+                            doc.insert(label.clone(), BsonValue::String(elem_name.to_string()));
+                        }
+                    }
+
+                    if matcher.match_value_at_pos.is_some() {
+                        // Yes we want the value, by position
+                        want_this_value = true;
                     }
                 }
 
-                if matcher.match_value_at_pos.is_some() {
-                    // Yes we want the value, by position
-                    want_this_value = true;
+                if let Some(matcher) = exact_matcher {
+                    // Yes, we want the value
+                    want_this_value = want_this_value
+                        || matcher.match_exact.is_some() || matcher.match_array_len.is_some();
                 }
-            }
 
-            if let Some(matcher) = exact_matcher {
-                // Yes, we want the value
-                want_this_value = want_this_value
-                    || matcher.match_exact.is_some() || matcher.match_array_len.is_some();
-            }
+                let elem_value = match elem_type {
+                    0x01 => {
+                        // A float
+                        let mut buf = [0 as u8; 8];
+                        rdr.read_exact(&mut buf).await?;
+                        BsonValue::Float(f64::from_le_bytes(buf))
+                    }
+                    0x02 => {
+                        // String
+                        let str_len = rdr.read_i32_le().await?;
+                        if want_this_value {
+                            BsonValue::String(read_string_with_len(&mut rdr, str_len as usize).await?)
+                        } else {
+                            skip_bytes(&mut rdr, str_len as usize).await?;
+                            BsonValue::None
+                        }
+                    }
+                    0x03 | 0x04 => {
+                        // Embedded document or an array. Both are represented as a document.
+                        // We only go through the trouble of parsing this if the field selector
+                        // wants the document value or some element within it.
+                        let doc_len = rdr.read_i32_le().await?;
 
-            let elem_value = match elem_type {
-                0x01 => {
-                    // A float
-                    let mut buf = [0 as u8; 8];
-                    rdr.read_exact(&mut buf).await?;
-                    BsonValue::Float(f64::from_le_bytes(buf))
-                }
-                0x02 => {
-                    // String
-                    let str_len = rdr.read_i32_le().await?;
-                    if want_this_value {
-                        BsonValue::String(read_string_with_len(&mut rdr, str_len as usize).await?)
-                    } else {
-                        skip_bytes(&mut rdr, str_len as usize).await?;
+                        if want_this_value || self.want_prefix(&prefix_name) {
+                            self.parse_internal(rdr, &prefix_name, 0, exact_matcher, &mut doc).await?;
+                            BsonValue::Placeholder("<nested document>")
+                        } else {
+                            skip_bytes(&mut rdr, doc_len as usize - 4).await?;
+                            BsonValue::None
+                        }
+                    }
+                    0x05 => {
+                        // Binary data
+                        let len = rdr.read_i32_le().await?;
+                        skip_bytes(&mut rdr, (len + 1) as usize).await?;
+                        BsonValue::Placeholder("<binary data>")
+                    }
+                    0x06 => {
+                        // Undefined value. Deprecated.
                         BsonValue::None
                     }
-                }
-                0x03 | 0x04 => {
-                    // Embedded document or an array. Both are represented as a document.
-                    // We only go through the trouble of parsing this if the field selector
-                    // wants the document value or some element within it.
-                    let doc_len = rdr.read_i32_le().await?;
-
-                    if want_this_value || self.want_prefix(&prefix_name) {
-                        self.parse_internal(rdr, &prefix_name, 0, exact_matcher, &mut doc).await?;
-                        BsonValue::Placeholder("<nested document>")
-                    } else {
-                        skip_bytes(&mut rdr, doc_len as usize - 4).await?;
+                    0x07 => {
+                        let mut bytes = [0 as u8; 12];
+                        rdr.read_exact(&mut bytes).await?;
+                        BsonValue::ObjectId(bytes)
+                    }
+                    0x08 => {
+                        // Boolean
+                        let val = match rdr.read_u8().await? {
+                            0x00 => false,
+                            _ => true,
+                        };
+                        BsonValue::Boolean(val)
+                    }
+                    0x09 => {
+                        // UTC Datetime
+                        skip_bytes(&mut rdr, 8).await?;
+                        BsonValue::Placeholder("<UTC datetime>")
+                    }
+                    0x0A => {
+                        // Null value
                         BsonValue::None
                     }
-                }
-                0x05 => {
-                    // Binary data
-                    let len = rdr.read_i32_le().await?;
-                    skip_bytes(&mut rdr, (len + 1) as usize).await?;
-                    BsonValue::Placeholder("<binary data>")
-                }
-                0x06 => {
-                    // Undefined value. Deprecated.
-                    BsonValue::None
-                }
-                0x07 => {
-                    let mut bytes = [0 as u8; 12];
-                    rdr.read_exact(&mut bytes).await?;
-                    BsonValue::ObjectId(bytes)
-                }
-                0x08 => {
-                    // Boolean
-                    let val = match rdr.read_u8().await? {
-                        0x00 => false,
-                        _ => true,
-                    };
-                    BsonValue::Boolean(val)
-                }
-                0x09 => {
-                    // UTC Datetime
-                    skip_bytes(&mut rdr, 8).await?;
-                    BsonValue::Placeholder("<UTC datetime>")
-                }
-                0x0A => {
-                    // Null value
-                    BsonValue::None
-                }
-                0x0B => {
-                    // Regular expression
-                    let _regx = read_cstring(&mut rdr).await?;
-                    let _opts = read_cstring(&mut rdr).await?;
-                    BsonValue::Placeholder("<regex>")
-                }
-                0x0C => {
-                    // DBPointer. Deprecated.
-                    let len = rdr.read_i32_le().await?;
-                    skip_bytes(&mut rdr, (len + 12) as usize).await?;
-                    BsonValue::None
-                }
-                0x0D => {
-                    // Javascript code
-                    skip_read_len(&mut rdr).await?;
-                    BsonValue::Placeholder("<Javascript>")
-                }
-                0x0E => {
-                    // Symbol. Deprecated.
-                    skip_read_len(&mut rdr).await?;
-                    BsonValue::Placeholder("<symbol>")
-                }
-                0x0F => {
-                    // Code w/ scope
-                    skip_read_len(&mut rdr).await?;
-                    BsonValue::Placeholder("<Javascript with scope>")
-                }
-                0x10 => {
-                    // Int32
-                    BsonValue::Int32(rdr.read_i32_le().await?)
-                }
-                0x11 => {
-                    // Timestamp
-                    skip_bytes(&mut rdr, 8).await?;
-                    BsonValue::Placeholder("<timestamp>")
-                }
-                0x12 => {
-                    // Int64
-                    BsonValue::Int64(rdr.read_i64_le().await?)
-                }
-                0x13 => {
-                    // Decimal128
-                    skip_bytes(&mut rdr, 16).await?;
-                    BsonValue::Placeholder("<decimal128>")
-                }
-                0xFF => {
-                    // Min key.
-                    BsonValue::Placeholder("<min key>")
-                }
-                0x7F => {
-                    // Min key.
-                    BsonValue::Placeholder("<max key>")
-                }
-                other => {
-                    return Err(Error::new(
-                        ErrorKind::Other,
-                        format!("BSON: unrecognized type: 0x{:02x}", other),
-                    ));
-                }
-            };
+                    0x0B => {
+                        // Regular expression
+                        let _regx = read_cstring(&mut rdr).await?;
+                        let _opts = read_cstring(&mut rdr).await?;
+                        BsonValue::Placeholder("<regex>")
+                    }
+                    0x0C => {
+                        // DBPointer. Deprecated.
+                        let len = rdr.read_i32_le().await?;
+                        skip_bytes(&mut rdr, (len + 12) as usize).await?;
+                        BsonValue::None
+                    }
+                    0x0D => {
+                        // Javascript code
+                        skip_read_len(&mut rdr).await?;
+                        BsonValue::Placeholder("<Javascript>")
+                    }
+                    0x0E => {
+                        // Symbol. Deprecated.
+                        skip_read_len(&mut rdr).await?;
+                        BsonValue::Placeholder("<symbol>")
+                    }
+                    0x0F => {
+                        // Code w/ scope
+                        skip_read_len(&mut rdr).await?;
+                        BsonValue::Placeholder("<Javascript with scope>")
+                    }
+                    0x10 => {
+                        // Int32
+                        BsonValue::Int32(rdr.read_i32_le().await?)
+                    }
+                    0x11 => {
+                        // Timestamp
+                        skip_bytes(&mut rdr, 8).await?;
+                        BsonValue::Placeholder("<timestamp>")
+                    }
+                    0x12 => {
+                        // Int64
+                        BsonValue::Int64(rdr.read_i64_le().await?)
+                    }
+                    0x13 => {
+                        // Decimal128
+                        skip_bytes(&mut rdr, 16).await?;
+                        BsonValue::Placeholder("<decimal128>")
+                    }
+                    0xFF => {
+                        // Min key.
+                        BsonValue::Placeholder("<min key>")
+                    }
+                    0x7F => {
+                        // Min key.
+                        BsonValue::Placeholder("<max key>")
+                    }
+                    other => {
+                        return Err(Error::new(
+                            ErrorKind::Other,
+                            format!("BSON: unrecognized type: 0x{:02x}", other),
+                        ));
+                    }
+                };
 
-            if let Some(matcher) = prefix_matcher {
-                if let Some((ref label, pos)) = matcher.match_value_at_pos {
-                    if pos == position {
-                        doc.insert(label.clone(), elem_value.clone());
+                if let Some(matcher) = prefix_matcher {
+                    if let Some((ref label, pos)) = matcher.match_value_at_pos {
+                        if pos == position {
+                            doc.insert(label.clone(), elem_value.clone());
+                        }
+                    }
+                }
+
+                if let Some(matcher) = exact_matcher {
+                    if let Some(ref label) = matcher.match_exact {
+                        doc.insert(label.clone(), elem_value);
                     }
                 }
             }
-
-            if let Some(matcher) = exact_matcher {
-                if let Some(ref label) = matcher.match_exact {
-                    doc.insert(label.clone(), elem_value);
-                }
-            }
-        }
-        Ok(())
+            Ok(())
+        })
     }
-
 }
 
 #[derive(Debug, Clone)]
