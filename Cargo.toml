@@ -5,7 +5,7 @@ authors = ["mpihlak <martin.pihlak@gmail.com>"]
 edition = "2018"
 
 [features]
-default = [] #["is_sync"]
+default = [] # ["is_sync"]
 is_sync = []
 
 [dependencies]

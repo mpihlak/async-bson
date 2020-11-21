@@ -44,9 +44,13 @@ use {
 
 #[cfg(not(feature="is_sync"))]
 type ParserResult<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
+#[cfg(not(feature="is_sync"))]
+fn pin_maybe<T>(v: T) -> Pin<Box<T>> { Box::pin(v) }
 
 #[cfg(feature="is_sync")]
-type ParserResult = Result<()>;
+type ParserResult<'a> = Result<()>;
+#[cfg(feature="is_sync")]
+fn pin_maybe<T>(v: T) -> T { v }
 
 #[cfg(not(feature="is_sync"))]
 pub trait DocumentReader: AsyncReadExt+AsyncBufReadExt+Unpin+Send {}
@@ -69,7 +73,6 @@ pub trait DocumentReader: std::io::BufRead {
 
 #[cfg(feature="is_sync")]
 impl <T>DocumentReader for T where T: std::io::BufRead {}
-
 
 /// Async parser that extracts BSON fields into a Document.
 ///
@@ -350,7 +353,7 @@ impl<'a> DocumentParser<'a> {
         mut doc: &'x mut Document,
     ) -> ParserResult<'x>
     {
-        Box::pin(async move {
+        pin_maybe(async move {
             let mut position = position;
 
             loop {
