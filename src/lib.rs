@@ -722,7 +722,7 @@ mod tests {
     use super::*;
     use bson::doc;
 
-    #[tokio::test]
+    #[maybe_async::test(feature="is_sync", async(not(feature="is_sync"), tokio::test))]
     async fn test_parse_bson() {
 
         let doc = doc! {
@@ -773,7 +773,7 @@ mod tests {
         assert_eq!(9, doc.len());
     }
 
-    #[tokio::test]
+    #[maybe_async::test(feature="is_sync", async(not(feature="is_sync"), tokio::test))]
     async fn test_multiple_docs() {
         let mut buf = Vec::new();
 
@@ -803,7 +803,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[maybe_async::test(feature="is_sync", async(not(feature="is_sync"), tokio::test))]
     async fn test_nested_array() {
         let doc = doc! {
             "f": doc! {
@@ -830,7 +830,7 @@ mod tests {
         assert_eq!(44, doc.get_i32("c").unwrap());
     }
 
-    #[tokio::test]
+    #[maybe_async::test(feature="is_sync", async(not(feature="is_sync"), tokio::test))]
     async fn test_keep_bytes() {
         let buf = b"\x16\x00\x00\x00\x02hello\x00\x06\x00\x00\x00world\x00\x00";
 
@@ -848,7 +848,7 @@ mod tests {
 
     // This is an expensive benchmark, ignore this by default
     // Run with: time cargo test -- --ignored
-    #[tokio::test]
+    #[maybe_async::test(feature="is_sync", async(not(feature="is_sync"), tokio::test))]
     #[ignore]
     async fn benchmark_parser() {
         const NUM_ITERATIONS: i32 = 100_000;
@@ -880,7 +880,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[maybe_async::test(feature="is_sync", async(not(feature="is_sync"), tokio::test))]
     async fn test_read_cstring() {
         let buf = b"kala\0";
         let res = read_cstring(&mut Cursor::new(&buf[..])).await.unwrap();
