@@ -16,7 +16,7 @@
 //! of buffering the whole message. This is also useful in cases when don't want (or can't) use
 //! an async runtime (i.e. in a WASM sandbox).
 //!
-//! ```
+//! ```text
 //! [dependencies]
 //! async-bson = { version = "0.2", features = ["is_sync"] }
 //! ```
@@ -56,7 +56,7 @@ use {
 };
 
 #[cfg(not(feature="is_sync"))]
-type ParserResult<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
+type ParserResult<'a> = Pin<Box<dyn Future<Output = Result<()>> + 'a + Send>>;
 #[cfg(not(feature="is_sync"))]
 fn pin_maybe<T>(v: T) -> Pin<Box<T>> { Box::pin(v) }
 
