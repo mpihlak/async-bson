@@ -79,8 +79,16 @@ pub trait DocumentReader: std::io::BufRead {
         self.read_i32::<LittleEndian>()
     }
 
+    fn read_u32_le(&mut self) -> Result<u32> {
+        self.read_u32::<LittleEndian>()
+    }
+
     fn read_i64_le(&mut self) -> Result<i64> {
         self.read_i64::<LittleEndian>()
+    }
+
+    fn read_u64_le(&mut self) -> Result<u64> {
+        self.read_u64::<LittleEndian>()
     }
 }
 
